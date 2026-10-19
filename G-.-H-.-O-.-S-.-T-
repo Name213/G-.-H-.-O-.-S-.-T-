@@ -31,49 +31,6 @@ chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Host.UI.RawUI.WindowTitle = "[ RIEWJADDD SHOP ] OPTIMIZATION"
 
-# -- ปรับ UI หน้าต่างให้ใหญ่ ตัวหนังสือคมชัด อ่านง่าย (Font Size 22pt + Dark Mode) --
-try {
-    $csharpFont = @"
-using System;
-using System.Runtime.InteropServices;
-[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-public struct CONSOLE_FONT_INFO_EX {
-    public uint cbSize;
-    public uint nFont;
-    public short dwFontSizeX;
-    public short dwFontSizeY;
-    public int FontFamily;
-    public int FontWeight;
-    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-    public string FaceName;
-}
-public class ConsoleFontHelper {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern IntPtr GetStdHandle(int nStdHandle);
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool SetCurrentConsoleFontEx(IntPtr hConsoleOutput, bool bMaximumWindow, ref CONSOLE_FONT_INFO_EX lpConsoleCurrentFontEx);
-}
-"@
-    Add-Type -TypeDefinition $csharpFont -Language CSharp -ErrorAction SilentlyContinue
-    $hOut = [ConsoleFontHelper]::GetStdHandle(-11)
-    $font = New-Object CONSOLE_FONT_INFO_EX
-    $font.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($font)
-    $font.dwFontSizeY = 22
-    $font.FontWeight = 700
-    $font.FaceName = "Consolas"
-    [ConsoleFontHelper]::SetCurrentConsoleFontEx($hOut, $false, [ref]$font)
-} catch {}
-
-try {
-    [Console]::BackgroundColor = [ConsoleColor]::Black
-    [Console]::ForegroundColor = [ConsoleColor]::White
-    $Host.UI.RawUI.BackgroundColor = "Black"
-    $Host.UI.RawUI.ForegroundColor = "White"
-    $raw = $Host.UI.RawUI
-    $raw.BufferSize = New-Object System.Management.Automation.Host.Size(85, 30)
-    $raw.WindowSize = New-Object System.Management.Automation.Host.Size(85, 30)
-} catch {}
-Clear-Host
 
 # -- Path resolver (รองรับทั้งเปิดจากไฟล์ และรันผ่านคำสั่ง irm tinyurl | iex) --
 if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
@@ -1175,20 +1132,16 @@ function Clear-GhostLogs {
 function Draw-AuthScreen {
     Clear-Host
     Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "Cyan"
-    Write-Host "  =========================================================================="
-    $Host.UI.RawUI.ForegroundColor = "Red"
-    Write-Host "                  R I E W J A D D D   S H O P   [ V 1.0 ]"
-    $Host.UI.RawUI.ForegroundColor = "Yellow"
-    Write-Host "                     -- KEY AUTHENTICATION SYSTEM --"
-    $Host.UI.RawUI.ForegroundColor = "Cyan"
-    Write-Host "  =========================================================================="
-    Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "DarkGray"
-    Write-Host "    HWID    : " -NoNewline; Write-Host "$CurrentHWID" -ForegroundColor Green
-    Write-Host "    Machine : " -NoNewline; Write-Host "$env:COMPUTERNAME" -ForegroundColor Green
+    Write-Host "  ============================================"
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  RIEWJADDD SHOP  -  KEY AUTHENTICATION"
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  ============================================"
     Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "White"
+    Write-Host "  HWID: $CurrentHWID"
+    Write-Host "  Machine: $env:COMPUTERNAME"
+    Write-Host ""
 }
 
 # -- Crack behavior detection (distinguish cracker vs user) --
