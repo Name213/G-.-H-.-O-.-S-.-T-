@@ -783,8 +783,8 @@ function Save-KeyDB {
 function Validate-Key {
     param([string]$InputKey)
     
-    # Master key (decoded from obfuscated bytes or DEV / RIEWJADDD)
-    if ($InputKey -eq $_mk -or $InputKey -eq "DEV" -or $InputKey -eq "RIEWJADDD") {
+    # Master key (เฉพาะ DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน)
+    if ($InputKey -eq $_mk -or $InputKey -eq "DEV") {
         Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         return "MASTER"
     }
@@ -1328,17 +1328,23 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
             Write-Host ""
             Write-Host "  KEY ACTIVATED! Bound to this machine."
             Write-Host "  HWID: $CurrentHWID"
+            Write-Host "  [OK] เข้าสู่ระบบสำเร็จ กำลังเริ่มการปรับแต่ง FiveM & Windows..." -ForegroundColor Cyan
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
+            Start-Sleep -Milliseconds 800
+            break
         }
         "VALID" {
             $Host.UI.RawUI.ForegroundColor = "Green"
             Write-Host ""
             Write-Host "  KEY VALID - Access granted."
+            Write-Host "  [OK] ตรวจสอบคีย์ถูกต้อง กำลังเริ่มการปรับแต่ง FiveM & Windows..." -ForegroundColor Cyan
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
+            Start-Sleep -Milliseconds 800
+            break
         }
         "HWID_MISMATCH" {
             # Clear screen completely, redraw clean
