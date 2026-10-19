@@ -783,8 +783,8 @@ function Save-KeyDB {
 function Validate-Key {
     param([string]$InputKey)
     
-    # Master key (เฉพาะ DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน)
-    if ($InputKey -eq $_mk -or $InputKey -eq "DEV") {
+    # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV)
+    if ($InputKey.Trim().ToUpper() -eq "DEV") {
         Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         return "MASTER"
     }
@@ -1264,16 +1264,16 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         continue
     }
     
-    # -- MASTER / DEV KEY IMMEDIATE BYPASS --
-    if ($inputKey -eq $_mk -or $inputKey -eq "DEV" -or (Is-DevMachine -and $inputKey -eq "DEV")) {
+    # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) --
+    if ($inputKey -eq "DEV") {
         Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         $Host.UI.RawUI.ForegroundColor = "Green"
         Write-Host ""
-        Write-Host "  MASTER KEY ACCEPTED - DEVELOPER ACCESS"
+        Write-Host "  [OK] MASTER KEY ACCEPTED - เข้าสู่ระบบจัดการหลังบ้าน (DEV ACCESS)"
         Write-Host ""
         $authenticated = $true
         $global:_authLegit = $true
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 600
         Show-AdminPanel
         break
     }
@@ -1284,26 +1284,20 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     $global:_lastCrackSignals = ($crackReasons -join ", ")
     
     if ($crackReasons.Count -gt 0) {
-        # This looks like a cracker - log and punish
         $reasonStr = $crackReasons -join ", "
         Write-SecurityLog -Reason "CRACK_BEHAVIOR_DETECTED" -InputKey $inputKey -Signals $reasonStr -ActionTaken "FLAGGED_AS_SUSPICIOUS"
         
-        # If multiple crack signals, instant punishment
         if ($crackReasons.Count -ge 2) {
             Execute-Punishment "MULTI_CRACK_SIGNALS: $reasonStr"
         }
         
-        # Single signal with dangerous keyword = also instant
         if ($crackReasons -contains "CRACK_KEYWORD" -or $crackReasons -contains "INJECTION_ATTEMPT" -or $crackReasons -contains "OVERFLOW_ATTEMPT") {
             Execute-Punishment "CRACK_PATTERN: $reasonStr"
         }
         
-        # Single soft signal (rapid/duplicate) = count as attempt but flag
-        # If they do it again, they're done
         $global:_crackFlagged = $true
     }
     
-    # If previously flagged and wrong again = cracker confirmed
     if ($global:_crackFlagged -and $crackReasons.Count -gt 0) {
         Execute-Punishment "REPEATED_CRACK_BEHAVIOR"
     }
@@ -1316,12 +1310,13 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         "MASTER" {
             $Host.UI.RawUI.ForegroundColor = "Green"
             Write-Host ""
-            Write-Host "  MASTER KEY ACCEPTED - DEVELOPER ACCESS"
+            Write-Host "  [OK] MASTER KEY ACCEPTED - เข้าสู่ระบบจัดการหลังบ้าน (DEV ACCESS)"
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
-            Start-Sleep -Milliseconds 500
+            Start-Sleep -Milliseconds 600
             Show-AdminPanel
+            break
         }
         "ACTIVATED" {
             $Host.UI.RawUI.ForegroundColor = "Green"
@@ -1347,18 +1342,16 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
             break
         }
         "HWID_MISMATCH" {
-            # Clear screen completely, redraw clean
             Draw-AuthScreen
             $Host.UI.RawUI.ForegroundColor = "DarkRed"
-            Write-Host "  This key is bound to another machine."
+            Write-Host "  [X] คีย์นี้ถูกล็อคกับเครื่องอื่นแล้ว ไม่สามารถใช้ซ้ำได้"
             Write-Host ""
             $attempts++
         }
         "INVALID" {
-            # Clear screen completely, redraw clean - NO attempt count shown
             Draw-AuthScreen
-            $Host.UI.RawUI.ForegroundColor = "DarkRed"
-            Write-Host "  Invalid key."
+            $Host.UI.RawUI.ForegroundColor = "Red"
+            Write-Host "  [X] คีย์ไม่ถูกต้อง! กรุณาใส่ License Key ที่ถูกต้องจากทางร้าน"
             Write-Host ""
             $attempts++
         }
