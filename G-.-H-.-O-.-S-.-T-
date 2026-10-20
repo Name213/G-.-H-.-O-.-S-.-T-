@@ -1522,16 +1522,15 @@ function Clear-GhostLogs {
 function Draw-AuthScreen {
     Clear-Host
     Write-Host ""
-    Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
-    Write-Host "  │  ✦ RIEWJADDD SHOP ✦   SYSTEM OPTIMIZATION & AUTHENTICATION   │" -ForegroundColor Red
-    Write-Host "  ├──────────────────────────────────────────────────────────────┤" -ForegroundColor DarkRed
-    Write-Host "  │  [HWID]   : " -NoNewline -ForegroundColor DarkGray
-    Write-Host ("{0,-49}│" -f $CurrentHWID) -ForegroundColor Cyan
-    Write-Host "  │  [DEVICE] : " -NoNewline -ForegroundColor DarkGray
-    Write-Host ("{0,-49}│" -f $env:COMPUTERNAME) -ForegroundColor White
-    Write-Host "  │  [STATUS] : " -NoNewline -ForegroundColor DarkGray
-    Write-Host ("{0,-49}│" -f "READY • ENTER YOUR LICENSE KEY") -ForegroundColor Yellow
-    Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  ============================================"
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    Write-Host "  RIEWJADDD SHOP  -  KEY AUTHENTICATION"
+    $Host.UI.RawUI.ForegroundColor = "DarkGray"
+    Write-Host "  ============================================"
+    Write-Host ""
+    Write-Host "  HWID: $CurrentHWID"
+    Write-Host "  Machine: $env:COMPUTERNAME"
     Write-Host ""
 }
 
@@ -1813,37 +1812,43 @@ function Yellow { param($t) Write-Host $t -ForegroundColor Yellow  -NoNewline }
 function NL     { Write-Host "" }
 
 function Spin {
-    param([string]$Label, [int]$Ms = 300)
-    $steps = 16
-    $delay = [math]::Max(4, [int]($Ms / 20))
-    for ($i = 0; $i -le $steps; $i++) {
-        $pct = [int](($i / $steps) * 100)
-        $bar = "█" * $i
-        $pad = "░" * ($steps - $i)
-        $barCol = if ($pct -lt 100) { "Red" } else { "Green" }
-        Write-Host -NoNewline "`r   [$bar$pad] " -ForegroundColor $barCol
-        Write-Host -NoNewline ("{0,3}% " -f $pct) -ForegroundColor $(if ($pct -eq 100) { "White" } else { "Yellow" })
-        Write-Host -NoNewline ("│ {0,-42}" -f $Label) -ForegroundColor $(if ($pct -eq 100) { "White" } else { "DarkGray" })
-        if ($i -lt $steps) { Start-Sleep -Milliseconds $delay }
+    param([string]$Label, [int]$Ms = 600)
+    $frames = @("  -  ","  \  ","  |  ","  /  ")
+    $cols   = @("Red","DarkRed","Red","DarkRed")
+    $end    = (Get-Date).AddMilliseconds($Ms)
+    $i      = 0
+    while ((Get-Date) -lt $end) {
+        $Host.UI.RawUI.ForegroundColor = $cols[$i % 4]
+        Write-Host "`r$($frames[$i % 4])$Label   " -NoNewline
+        Start-Sleep -Milliseconds 80
+        $i++
     }
-    Write-Host " [✓]" -ForegroundColor Green
+    $Host.UI.RawUI.ForegroundColor = "Green"
+    Write-Host "`r  + $Label   "
+    $Host.UI.RawUI.ForegroundColor = "Gray"
 }
 
 function PulseBar {
     param([string]$Label, [int]$Steps = 30)
+    $blocks = @(" ",".",".","o","o","O","O","#","#")
+    $cols   = @("DarkRed","Red","DarkRed","Red","Cyan","Red","DarkRed","Red","White")
     Write-Host ""
-    Write-Host "  » $Label" -ForegroundColor White
+    White "  $Label"
+    NL
     $bar = ""
     for ($i = 0; $i -lt $Steps; $i++) {
-        $pad = "░" * ($Steps - $i - 1)
-        $bar += "█"
-        $pct = [int](($i / $Steps) * 100)
-        Write-Host -NoNewline "`r    [$bar$pad] $pct%" -ForegroundColor Red
-        Start-Sleep -Milliseconds (Get-Random -Minimum 8 -Maximum 22)
+        $col = $cols[$i % $cols.Count]
+        $Host.UI.RawUI.ForegroundColor = $col
+        $bar += $blocks[$i % $blocks.Count]
+        $pad  = " " * ($Steps - $i - 1)
+        Write-Host -NoNewline "`r  [$bar$pad] $([int](($i/$Steps)*100))%"
+        Start-Sleep -Milliseconds (Get-Random -Minimum 8 -Maximum 28)
     }
-    $full = "█" * $Steps
-    Write-Host "`r    [$full] 100%" -ForegroundColor Green
+    $Host.UI.RawUI.ForegroundColor = "Red"
+    $full = "#" * $Steps
+    Write-Host "`r  [$full] 100%"
     Write-Host ""
+    $Host.UI.RawUI.ForegroundColor = "Gray"
 }
 
 function Flicker {
@@ -1858,29 +1863,29 @@ function Flicker {
     $Host.UI.RawUI.ForegroundColor = "Gray"
 }
 
-function DONE_LINE {
-    param($M)
-    Write-Host -NoNewline "    ✔  " -ForegroundColor Green
-    Write-Host $M -ForegroundColor Cyan
-}
+function DONE_LINE { param($M) Write-Host "  * $M" -ForegroundColor Cyan }
 
 # ========================================================
 # INTRO
 # ========================================================
 Clear-Host
 Write-Host ""
-Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
-Write-Host "  │  ✦ RIEWJADDD SHOP ✦   PERFORMANCE OPTIMIZATION ENGINE v$GHOST_VERSION │" -ForegroundColor Red
-Write-Host "  │  FiveM & Windows Kernel Tuning • Ultra-Low Latency Mode      │" -ForegroundColor DarkGray
-Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Flicker "RIEWJADDD SHOP" 6
+$Host.UI.RawUI.ForegroundColor = "DarkRed"
+Write-Host "  RIEWJADDD SHOP OPTIMIZATION  -  v$GHOST_VERSION"
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
 Write-Host ""
-PulseBar "Initializing RIEWJADDD Core Pipeline" 30
+Write-Host ""
+PulseBar "Loading RIEWJADDD SHOP Core" 32
 Write-Host ""
 
 # ========================================================
 # HARDWARE DETECT
 # ========================================================
-Spin "Scanning system hardware components" 500
+Spin "Scanning hardware..." 700
 
 try { $cpuName = (Get-CimInstance Win32_Processor).Name.Trim() } catch { $cpuName = "Unknown CPU" }
 $global:CPUName = $cpuName
@@ -1898,21 +1903,18 @@ elseif ($gpuName -match "AMD|Radeon") { $global:GPUType = "AMD"     }
 elseif ($gpuName -match "Intel")      { $global:GPUType = "Intel"   }
 else                                  { $global:GPUType = "UNKNOWN" }
 
+Write-Host "  " -NoNewline; Green "*"; White " CPU  : $CPUName"; NL
+Write-Host "  " -NoNewline; Green "*"; White " GPU  : $GPUFullName [$GPUType]"; NL
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+Write-Host "  " -NoNewline; Green "*"; White " RAM  : $ram GB"; NL
+Write-Host ""
+
 $fivemPaths = @("$env:LOCALAPPDATA\FiveM","$env:LOCALAPPDATA\FiveM\FiveM.app")
 $global:FiveMFound = $false; $global:FiveMPath = ""
 foreach ($fp in $fivemPaths) { if (Test-Path $fp) { $global:FiveMFound = $true; $global:FiveMPath = $fp; break } }
 
-Write-Host "  ┌── [ SYSTEM TELEMETRY ] ──────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "  ├── " -NoNewline -ForegroundColor DarkGray; Write-Host "Processor  : " -NoNewline -ForegroundColor White; Write-Host $CPUName -ForegroundColor Cyan
-Write-Host "  ├── " -NoNewline -ForegroundColor DarkGray; Write-Host "Graphics   : " -NoNewline -ForegroundColor White; Write-Host "$GPUFullName [$GPUType]" -ForegroundColor Cyan
-Write-Host "  ├── " -NoNewline -ForegroundColor DarkGray; Write-Host "Memory     : " -NoNewline -ForegroundColor White; Write-Host "$ram GB High-Speed DDR" -ForegroundColor Cyan
-if ($global:FiveMFound) {
-    Write-Host "  └── " -NoNewline -ForegroundColor DarkGray; Write-Host "FiveM Path : " -NoNewline -ForegroundColor White; Write-Host "DETECTED • $global:FiveMPath" -ForegroundColor Green
-} else {
-    Write-Host "  └── " -NoNewline -ForegroundColor DarkGray; Write-Host "FiveM Path : " -NoNewline -ForegroundColor White; Write-Host "NOT FOUND" -ForegroundColor Yellow
-}
-Write-Host "  └──────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+if ($global:FiveMFound) { Write-Host "  " -NoNewline; Green "*"; White " FiveM : DETECTED - $global:FiveMPath"; NL }
+else { Write-Host "  ~ FiveM : NOT FOUND" -ForegroundColor Yellow }
 Write-Host ""
 
 $fivemRunning = Get-Process -Name "FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060" -ErrorAction SilentlyContinue
@@ -1929,16 +1931,19 @@ if ($fivemRunning) {
 # ========================================================
 # TWEAKS
 # ========================================================
-Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
-Write-Host "  │   ENGAGING RIEWJADDD SHOP SYSTEM OPTIMIZATION PIPELINE       │" -ForegroundColor Red
-Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+$Host.UI.RawUI.ForegroundColor = "Red"
+Write-Host "  ENGAGING RIEWJADDD SHOP OPTIMIZATION SEQUENCE"
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
 Write-Host ""
 
-Spin "CPU scheduling priority" 450
+Spin "CPU scheduling priority" 500
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v ConvertibleSlateMode    /t REG_DWORD /d 0  /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 22 /f 2>$null | Out-Null
 
-Spin "Keyboard response tuning" 400
+Spin "Keyboard response tuning" 450
 $kbPath = "HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters"
 reg add "$kbPath" /v ConnectMultiplePorts    /t REG_DWORD /d 0             /f 2>$null | Out-Null
 reg add "$kbPath" /v KeyboardDataQueueSize   /t REG_DWORD /d 16            /f 2>$null | Out-Null
@@ -1946,11 +1951,11 @@ reg add "$kbPath" /v KeyboardDeviceBaseName  /t REG_SZ    /d KeyboardClass /f 2>
 reg add "$kbPath" /v MaximumPortsServiced    /t REG_DWORD /d 3             /f 2>$null | Out-Null
 reg add "$kbPath" /v SendOutputToAllPorts    /t REG_DWORD /d 1             /f 2>$null | Out-Null
 
-Spin "Removing FPS-killing overlays" 350
+Spin "Removing FPS-killing overlays" 400
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\GameBar" /v ShowGameBar /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "Disabling fullscreen optimizations" 350
+Spin "Disabling fullscreen optimizations" 400
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehavior                   /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode               /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode       /t REG_DWORD /d 1 /f 2>$null | Out-Null
@@ -1960,28 +1965,28 @@ foreach ($exe in @("FiveM.exe","GTA5.exe","fivem_web_b2060.exe")) {
     reg add "$layersPath" /v "C:\Program Files\Rockstar Games\Grand Theft Auto V\$exe" /t REG_SZ /d "~ DISABLEDXMAXIMIZEDWINDOWEDMODE" /f 2>$null | Out-Null
 }
 
-Spin "Unlocking Ultimate Performance Power Architecture" 500
+Spin "Unlocking Ultimate Performance" 800
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if (-not $existingLine) { powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-Null }
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if ($existingLine) { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null | Out-Null }
 else               { powercfg -setactive SCHEME_MIN 2>$null | Out-Null }
 
-Spin "Disabling system hibernation" 300
+Spin "Disabling hibernation" 350
 powercfg -h off 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power" /v HibernateEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "Reserving high-priority RAM for FiveM" 350
+Spin "Reserving RAM for FiveM" 400
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) { Stop-Service SysMain -Force -ErrorAction SilentlyContinue; Set-Service SysMain -StartupType Disabled -ErrorAction SilentlyContinue }
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v LargeSystemCache /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit  /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "Nuking junk files" 400
+Spin "Nuking junk files" 500
 Remove-Item "$env:Temp\*"       -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-Spin "Stripping Windows bloat animations" 350
+Spin "Stripping Windows animations" 400
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Desktop"               /v DragFullWindows   /t REG_SZ    /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Desktop"               /v MenuShowDelay     /t REG_SZ    /d 0 /f 2>$null | Out-Null
@@ -1992,7 +1997,7 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Ta
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v EnableAeroPeek            /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v AlwaysHibernateThumbnails /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "Injecting low-ping TCP/IP network stack" 450
+Spin "Injecting low-ping network stack" 900
 netsh int tcp set global autotuninglevel=normal  2>$null | Out-Null
 netsh int tcp set global chimney=disabled        2>$null | Out-Null
 netsh int tcp set global ecncapability=disabled  2>$null | Out-Null
@@ -2030,7 +2035,7 @@ ipconfig /flushdns 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "Boosting IRQ & thread priorities" 400
+Spin "Boosting IRQ priority" 500
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f 2>$null | Out-Null
 $netAdapters = Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match "Ethernet|Wi-Fi|Wireless|Network" -and $_.DeviceID -match "PCI" } | Select-Object -First 3
 foreach ($dev in $netAdapters) {
@@ -2043,7 +2048,7 @@ foreach ($dev in $netAdapters) {
     } catch {}
 }
 
-Spin "Injecting gaming process profile" 400
+Spin "Injecting game process profile" 500
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0   /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "GPU Priority"        /t REG_DWORD /d 8    /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v Priority              /t REG_DWORD /d 6    /f 2>$null | Out-Null
@@ -2051,16 +2056,16 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProf
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "SFIO Priority"       /t REG_SZ    /d High /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Background Only"     /t REG_SZ    /d False /f 2>$null | Out-Null
 
-Spin "Enforcing raw mouse input (zero acceleration)" 350
+Spin "Enabling raw mouse input" 350
 reg add "HKCU\Control Panel\Mouse" /v MouseSpeed      /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 0 /f 2>$null | Out-Null
 
-Spin "GPU stability & driver tuning" 350
+Spin "GPU stability tuning" 400
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDelay    /t REG_DWORD /d 10 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 20 /f 2>$null | Out-Null
 
-Spin "Applying $GPUType ultra-latency driver flags" 450
+Spin "Applying $GPUType driver tweaks" 600
 if ($GPUType -eq "NVIDIA") {
     $nvPath = "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
     reg add "$nvPath" /v PowerMizerEnable  /t REG_DWORD /d 1 /f 2>$null | Out-Null
@@ -2072,7 +2077,7 @@ if ($GPUType -eq "NVIDIA") {
     reg add "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v KMD_EnableComputePreemption /t REG_DWORD /d 0 /f 2>$null | Out-Null
 }
 
-Spin "Prioritizing FiveM in CPU scheduler" 400
+Spin "Setting FiveM process priority HIGH" 400
 $ifeoBase = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
 foreach ($exe in @("FiveM.exe","GTA5.exe")) {
     reg add "$ifeoBase\$exe\PerfOptions" /v CpuPriorityClass /t REG_DWORD /d 3 /f 2>$null | Out-Null
@@ -2083,7 +2088,7 @@ foreach ($name in @("FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060
     if ($proc) { try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch {} }
 }
 
-Spin "Locking system timer resolution to 1.0ms" 400
+Spin "Optimizing pagefile + timer resolution" 500
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) {
     try {
@@ -2104,7 +2109,7 @@ public class TimerRes { [DllImport("winmm.dll")] public static extern uint timeB
 } catch {}
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" /v GlobalTimerResolutionRequests /t REG_DWORD /d 1 /f 2>$null | Out-Null
 
-Spin "Disabling core parking & HPET" 450
+Spin "Disabling core parking + HPET" 600
 $schemes = powercfg -list 2>$null | Select-String "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})" | ForEach-Object { $_.Matches[0].Value }
 foreach ($scheme in $schemes) {
     powercfg -setacvalueindex $scheme SUB_PROCESSOR CPMINCORES 100 2>$null | Out-Null
@@ -2120,7 +2125,7 @@ if ($hpetKey) {
     reg add "$hpetReg" /v DisableHPET /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
 
-Spin "Tuning prefetch + Reflex latency reduction" 400
+Spin "Tuning prefetch + NVIDIA Reflex" 500
 $pfPath = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
 reg add "$pfPath" /v EnablePrefetcher /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "$pfPath" /v EnableSuperfetch /t REG_DWORD /d 0 /f 2>$null | Out-Null
@@ -2132,14 +2137,14 @@ if ($GPUType -eq "NVIDIA") {
     reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\NVTweak" /v MaxFramesAllowed /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
 
-Spin "Killing Delivery Optimization bandwidth theft" 350
+Spin "Killing Windows bandwidth theft" 400
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadMode         /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadModeProvider /t REG_DWORD /d 0 /f 2>$null | Out-Null
 Stop-Service "DoSvc" -Force -ErrorAction SilentlyContinue
 Set-Service  "DoSvc" -StartupType Disabled -ErrorAction SilentlyContinue
 
-Spin "Adding FiveM to Defender memory exclusions" 350
+Spin "Adding FiveM to Defender exclusions" 400
 try {
     $defSvc = Get-Service "WinDefend" -ErrorAction SilentlyContinue
     if ($defSvc -and $defSvc.Status -eq "Running") {
@@ -2147,14 +2152,14 @@ try {
     }
 } catch {}
 
-Spin "Wiping FiveM stream cache & logs" 400
+Spin "Wiping FiveM stream cache" 500
 if ($global:FiveMFound) {
     foreach ($cp in @("$env:LOCALAPPDATA\FiveM\FiveM.app\data\cache","$env:LOCALAPPDATA\FiveM\FiveM.app\logs")) {
         if (Test-Path $cp) { Get-ChildItem -Path $cp -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
-Spin "Rebuilding $GPUType GPU shader cache" 450
+Spin "Rebuilding $GPUType shader cache" 500
 if ($GPUType -eq "NVIDIA") {
     foreach ($p in @("$env:LOCALAPPDATA\NVIDIA\DXCache","$env:LOCALAPPDATA\NVIDIA\GLCache")) {
         if (Test-Path $p) { Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
@@ -2169,12 +2174,14 @@ if ($GPUType -eq "NVIDIA") {
 # OUTRO
 # ========================================================
 Write-Host ""
-PulseBar "Finalizing RIEWJADDD SHOP Architecture" 30
+PulseBar "Finalizing RIEWJADDD SHOP" 32
 Write-Host ""
 
-Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
-Write-Host "  │            ✦ RIEWJADDD SHOP OPTIMIZATION COMPLETE ✦          │" -ForegroundColor Green
-Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
+Flicker "  RIEWJADDD SHOP OPTIMIZATION COMPLETE" 5
+$Host.UI.RawUI.ForegroundColor = "DarkGray"
+Write-Host "  ============================================"
 Write-Host ""
 
 $items = @(
