@@ -167,7 +167,8 @@ function Send-DiscordWebhook {
         }
         $payload = @{ embeds = @($embed) } | ConvertTo-Json -Depth 5
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-RestMethod -Uri $webhook -Method Post -Body $payload -ContentType 'application/json' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
+        $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+        Invoke-RestMethod -Uri $webhook -Method Post -Body $utf8Bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
     } catch {}
 }
 
