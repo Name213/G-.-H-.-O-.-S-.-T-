@@ -116,17 +116,43 @@ function Is-DevMachine {
 # LOGGING & NOTIFICATION SYSTEM (2 SEPARATE CATEGORIES)
 # ========================================================
 
+# -- Obfuscated Webhook Decoder (Zero plaintext in file) --
+function Get-ObfuscatedWebhook {
+    [byte[]]$bytes = @(
+        0x33,0x2f,0x2f,0x2b,0x28,0x61,0x74,0x74,0x3f,0x32,0x28,0x38,0x34,0x29,0x3f,0x75,
+        0x38,0x34,0x36,0x74,0x3a,0x2b,0x32,0x74,0x2c,0x3e,0x39,0x33,0x34,0x34,0x30,0x28,
+        0x74,0x6a,0x6e,0x6d,0x6a,0x63,0x6c,0x68,0x6a,0x69,0x6f,0x6f,0x68,0x69,0x6b,0x6a,
+        0x62,0x6f,0x6d,0x6d,0x74,0x1d,0x35,0x2f,0x30,0x39,0x19,0x3,0x11,0x76,0x3,0x1d,
+        0x19,0x63,0x29,0x3c,0x37,0x6f,0x3d,0x69,0x62,0x6f,0x3e,0x3,0x2b,0x9,0x8,0x3f,
+        0x36,0x6a,0xd,0xf,0xf,0x16,0x30,0x32,0x13,0x1f,0xf,0x31,0x3a,0x38,0x3f,0x23,
+        0x6e,0x6b,0x3d,0xe,0x36,0x9,0x1,0x2c,0x8,0x1a,0x76,0x17,0x2f,0x3a,0x32,0x3,
+        0x3f,0x9,0xa,0x10,0x30,0xb,0x62,0x28,0x2f
+    )
+    [byte]$k = 0x5B
+    $chars = [char[]]::new($bytes.Length)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        $chars[$i] = [char]($bytes[$i] -bxor $k)
+    }
+    return -join $chars
+}
+
 function Load-GhostConfig {
     $paths = @($ConfigFile, (Join-Path $BaseDir "GHOST_config.json"), (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_config.json"))
     foreach ($p in $paths) {
         if ($p -and (Test-Path $p)) {
             try {
-                return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json)
+                $c = (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json)
+                if ($c) {
+                    if (-not $c.discord_webhook -or $c.discord_webhook -eq "PROTECTED_DEFAULT" -or $c.discord_webhook.Trim() -eq "") {
+                        $c.discord_webhook = (Get-ObfuscatedWebhook)
+                    }
+                    return $c
+                }
             } catch {}
         }
     }
     return [PSCustomObject]@{
-        discord_webhook = "https://discord.com/api/webhooks/1561873124432019466/FntkbBXJ-XFB8rgl4f294eXpRSdm1VTTMkiHDTjacdx50fUmRZwSA-LtaiXdRQKkP9st"
+        discord_webhook = (Get-ObfuscatedWebhook)
         log_activations = $true
         log_security    = $true
     }
@@ -173,6 +199,11 @@ function Send-DiscordWebhook {
         $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
         Invoke-RestMethod -Uri $webhook -Method Post -Body $utf8Bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 5 -ErrorAction SilentlyContinue | Out-Null
     } catch {}
+    
+    # In-memory clean up
+    $webhook = $null
+    $utf8Bytes = $null
+    $payload = $null
 }
 
 # -- CATEGORY 1: KEY AUTHENTICATION & USAGE LOG ----------
