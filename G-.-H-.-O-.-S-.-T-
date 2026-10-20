@@ -99,16 +99,16 @@ function Get-HWID {
 $CurrentHWID = Get-HWID
 
 # -- Developer Safe Mode & Whitelist (NEVER BAN / NEVER CRASH DEV MACHINE) --
-$DevHWIDs = @("ABED3F661712A0A7")
+$DevHWIDs = @("ABED3F661712A0A7", "2896150E335D7B10")
 $DevMachines = @("KERNELOS-PC")
 
 function Is-DevMachine {
+    # 1. เช็ค HWID ล็อคเฉพาะเครื่องจริงของ Developer
     if ($DevHWIDs -contains $CurrentHWID) { return $true }
-    if ($DevMachines -contains $env:COMPUTERNAME) { return $true }
-    $devFlag = Join-Path $BaseDir ".ghost_dev"
-    if (Test-Path $devFlag) { return $true }
-    $devFlag2 = Join-Path $BaseDir ".riewjaddd_dev"
-    if (Test-Path $devFlag2) { return $true }
+    # 2. เครื่อง Dev จะต้องมีชื่อตรง และมีไฟล์ .ghost_dev หรือ .riewjaddd_dev ในโฟลเดอร์เท่านั้น
+    if (($DevMachines -contains $env:COMPUTERNAME) -and ((Test-Path (Join-Path $BaseDir ".ghost_dev")) -or (Test-Path (Join-Path $BaseDir ".riewjaddd_dev")))) {
+        return $true
+    }
     return $false
 }
 
@@ -856,10 +856,15 @@ function Validate-Key {
     if (-not $InputKey) { return "INVALID" }
     $InputKey = $InputKey.Trim().ToUpper()
     
-    # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV)
+    # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV) - ล็อคเฉพาะเครื่อง DEV เท่านั้น
     if ($InputKey -eq "DEV") {
-        Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
-        return "MASTER"
+        if (Is-DevMachine) {
+            Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
+            return "MASTER"
+        } else {
+            Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNAUTHORIZED_DEV_ATTEMPT" -Details "Unauthorized attempt to use DEV from $env:COMPUTERNAME (HWID: $CurrentHWID)"
+            return "INVALID"
+        }
     }
     
     $db = Load-KeyDB
@@ -1344,18 +1349,31 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         continue
     }
     
-    # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) --
+    # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) - ล็อคเฉพาะเครื่อง DEV เท่านั้น --
     if ($inputKey -eq "DEV") {
-        Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
-        $Host.UI.RawUI.ForegroundColor = "Green"
-        Write-Host ""
-        Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
-        Write-Host ""
-        $authenticated = $true
-        $global:_authLegit = $true
-        Start-Sleep -Milliseconds 600
-        Show-AdminPanel
-        break
+        if (Is-DevMachine) {
+            Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
+            $Host.UI.RawUI.ForegroundColor = "Green"
+            Write-Host ""
+            Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
+            Write-Host ""
+            $authenticated = $true
+            $global:_authLegit = $true
+            Start-Sleep -Milliseconds 600
+            Show-AdminPanel
+            break
+        } else {
+            Write-AuthLog -Key $inputKey -Status "INVALID" -Owner "UNAUTHORIZED_DEV_ATTEMPT" -Details "Unauthorized attempt to use DEV from $env:COMPUTERNAME (HWID: $CurrentHWID)"
+            $Host.UI.RawUI.ForegroundColor = "DarkRed"
+            Write-Host ""
+            Write-Host "  [ACCESS DENIED] DEV key is restricted to Developer machine only."
+            Write-Host "  This unauthorized attempt has been logged." -ForegroundColor Yellow
+            Write-Host ""
+            $attempts++
+            $lastInputTime = $inputTime
+            Start-Sleep -Seconds 2
+            continue
+        }
     }
     
     # -- CRACK VS NORMAL DETECTION --
@@ -1388,15 +1406,24 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     
     switch ($result) {
         "MASTER" {
-            $Host.UI.RawUI.ForegroundColor = "Green"
-            Write-Host ""
-            Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
-            Write-Host ""
-            $authenticated = $true
-            $global:_authLegit = $true
-            Start-Sleep -Milliseconds 600
-            Show-AdminPanel
-            break
+            if (Is-DevMachine) {
+                $Host.UI.RawUI.ForegroundColor = "Green"
+                Write-Host ""
+                Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
+                Write-Host ""
+                $authenticated = $true
+                $global:_authLegit = $true
+                Start-Sleep -Milliseconds 600
+                Show-AdminPanel
+                break
+            } else {
+                $Host.UI.RawUI.ForegroundColor = "DarkRed"
+                Write-Host ""
+                Write-Host "  [ACCESS DENIED] DEV key is restricted to Developer machine only."
+                Write-Host ""
+                $attempts++
+                continue
+            }
         }
         "ACTIVATED" {
             $Host.UI.RawUI.ForegroundColor = "Green"
