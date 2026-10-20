@@ -183,28 +183,28 @@ function Write-AuthLog {
     $user      = $env:USERNAME
     $machine   = $env:COMPUTERNAME
     $hwid      = $CurrentHWID
-    if (-not $Owner -or $Owner -eq "") { $Owner = "ไม่มีข้อมูล" }
+    if (-not $Owner -or $Owner -eq "") { $Owner = "N/A" }
     
     $badge = switch ($Status) {
-        "ACTIVATED"     { "[ลงทะเบียนสำเร็จ - ผูกกับเครื่องนี้]" }
-        "VALID"         { "[คีย์ถูกต้อง - ได้รับอนุญาต]" }
-        "MASTER"        { "[ผู้พัฒนา / ยศ DEV เข้าสู่ระบบ]" }
-        "HWID_MISMATCH" { "[HWID ไม่ตรง - ปฏิเสธการเข้าถึง]" }
-        "INVALID"       { "[คีย์ไม่ถูกต้อง - ปฏิเสธการเข้าถึง]" }
+        "ACTIVATED"     { "[ACTIVATED - FIRST BIND]" }
+        "VALID"         { "[VALID - ACCESS GRANTED]" }
+        "MASTER"        { "[MASTER / DEVELOPER]" }
+        "HWID_MISMATCH" { "[HWID MISMATCH - REJECTED]" }
+        "INVALID"       { "[INVALID KEY - REJECTED]" }
         default         { "[$Status]" }
     }
     
     $box = @"
 ================================================================================
-[ $timestamp ] >>> บันทึกการใช้งานคีย์: $badge
+[ $timestamp ] >>> KEY AUTHENTICATION: $badge
 --------------------------------------------------------------------------------
-  รหัส License Key    : $Key
-  เจ้าของคีย์          : $Owner
-  สถานะการตรวจสอบ     : $badge
-  ชื่อเครื่องคอมพิวเตอร์ : $machine
-  ผู้ใช้งาน Windows    : $user
-  รหัสฮาร์ดแวร์ HWID   : $hwid
-  รายละเอียด / บันทึก  : $Details
+  License Key  : $Key
+  Key Owner    : $Owner
+  Status       : $badge
+  Machine Name : $machine
+  Windows User : $user
+  Hardware ID  : $hwid
+  Notes/Action : $Details
 ================================================================================
 
 "@
@@ -212,7 +212,7 @@ function Write-AuthLog {
         [System.IO.File]::AppendAllText($ActivationLogFile, $box, [System.Text.Encoding]::UTF8)
     } catch {}
 
-    # Discord Webhook Notification
+    # Discord Webhook Notification (ภาษาไทยในดิสคอร์ด)
     $embedColor = switch ($Status) {
         "ACTIVATED"     { 65280 }    # Green
         "VALID"         { 3066993 }  # Cyan
@@ -221,10 +221,20 @@ function Write-AuthLog {
         "INVALID"       { 15158332 } # Red
         default         { 9807270 }
     }
+    $thaiStatus = switch ($Status) {
+        "ACTIVATED"     { "✅ ลงทะเบียนใหม่ (ผูกกับเครื่องนี้)" }
+        "VALID"         { "🟢 คีย์ถูกต้อง (เข้าใช้งานสำเร็จ)" }
+        "MASTER"        { "👑 ผู้พัฒนา (ยศ DEV เข้าหลังบ้าน)" }
+        "HWID_MISMATCH" { "⚠️ HWID ไม่ตรง (ถูกปฏิเสธ)" }
+        "INVALID"       { "❌ คีย์ไม่ถูกต้อง (ถูกปฏิเสธ)" }
+        default         { $badge }
+    }
+    $thaiOwner = if ($Owner -and $Owner -ne "N/A") { $Owner } else { "ไม่มีข้อมูล" }
+
     $discordFields = @(
         @{ name = "🔑 รหัส License Key";   value = ('`' + $Key + '`'); inline = $true },
-        @{ name = "👤 เจ้าของคีย์";       value = "$Owner"; inline = $true },
-        @{ name = "📌 สถานะ";             value = "$badge"; inline = $true },
+        @{ name = "👤 เจ้าของคีย์";       value = "$thaiOwner"; inline = $true },
+        @{ name = "📌 สถานะ";             value = "$thaiStatus"; inline = $true },
         @{ name = "💻 ชื่อเครื่องคอม";      value = "$machine"; inline = $true },
         @{ name = "👤 บัญชี Windows";      value = "$user"; inline = $true },
         @{ name = "🔒 รหัส HWID";          value = ('`' + $hwid + '`'); inline = $false }
@@ -232,7 +242,7 @@ function Write-AuthLog {
     if ($Details) {
         $discordFields += @{ name = "📝 บันทึกเพิ่มเติม"; value = "$Details"; inline = $false }
     }
-    Send-DiscordWebhook -Title "[RIEWJADDD SHOP] แจ้งเตือนการใช้งานคีย์: $Status" -Description "บันทึกประวัติการยืนยันตัวตนและการใช้งานคีย์ในระบบ" -Color $embedColor -Fields $discordFields
+    Send-DiscordWebhook -Title "[RIEWJADDD SHOP] แจ้งเตือนการใช้งานคีย์" -Description "บันทึกประวัติการยืนยันตัวตนและการใช้งานคีย์ในระบบ" -Color $embedColor -Fields $discordFields
 }
 
 # -- CATEGORY 2: ANTI-CRACK & SECURITY THREAT LOG --------
@@ -247,20 +257,20 @@ function Write-SecurityLog {
     $user      = $env:USERNAME
     $machine   = $env:COMPUTERNAME
     $hwid      = $CurrentHWID
-    if (-not $InputKey) { $InputKey = "ไม่มีข้อมูล" }
+    if (-not $InputKey) { $InputKey = "N/A" }
     
     $box = @"
 ================================================================================
-[ $timestamp ] !!! แจ้งเตือนความปลอดภัย: ตรวจพบการพยายามเจาะระบบ / แคร็ก !!!
+[ $timestamp ] !!! SECURITY THREAT / CRACK DETECTED !!!
 --------------------------------------------------------------------------------
-  สาเหตุภัยคุกคาม     : [THREAT] $Reason
-  ระดับความปลอดภัย    : วิกฤต (CRITICAL)
-  ชื่อเครื่องคอมพิวเตอร์ : $machine
-  ผู้ใช้งาน Windows    : $user
-  รหัส HWID ผู้กระทำ  : $hwid
-  ข้อความ/คีย์ที่กรอก : $InputKey
-  พฤติกรรมผิดปกติ     : $(if ($Signals) { $Signals } else { 'พยายามละเมิดระบบโดยตรง' })
-  การดำเนินการป้องกัน : $ActionTaken
+  Threat Reason : [THREAT] $Reason
+  Threat Level  : CRITICAL
+  Machine Name  : $machine
+  Windows User  : $user
+  Offender HWID : $hwid
+  Input Payload : $InputKey
+  Attack Signals: $(if ($Signals) { $Signals } else { 'Direct Violation' })
+  Defense Action: $ActionTaken
 ================================================================================
 
 "@
@@ -268,13 +278,15 @@ function Write-SecurityLog {
         [System.IO.File]::AppendAllText($SecurityLogFile, $box, [System.Text.Encoding]::UTF8)
     } catch {}
 
-    # Discord Webhook Notification
+    # Discord Webhook Notification (ภาษาไทยในดิสคอร์ด)
+    $thaiKey = if ($InputKey -and $InputKey -ne "N/A") { ('`' + $InputKey + '`') } else { "ไม่มีข้อมูล" }
+    $thaiAction = if ($ActionTaken -match "BSOD") { "🚫 แบนถาวร + จอฟ้า (BSOD)" } else { $ActionTaken }
     $discordFields = @(
         @{ name = "🚨 สาเหตุที่ตรวจพบ"; value = "**$Reason**"; inline = $false },
         @{ name = "💻 เครื่องที่กระทำผิด"; value = "$machine ($user)"; inline = $true },
         @{ name = "🔒 รหัส HWID";         value = ('`' + $hwid + '`'); inline = $true },
-        @{ name = "⌨️ คีย์ที่กรอก";       value = ('`' + $InputKey + '`'); inline = $false },
-        @{ name = "🛡️ การป้องกัน";       value = "**$ActionTaken**"; inline = $false }
+        @{ name = "⌨️ คีย์ที่กรอก";       value = $thaiKey; inline = $false },
+        @{ name = "🛡️ การป้องกัน";       value = "**$thaiAction**"; inline = $false }
     )
     if ($Signals) {
         $discordFields += @{ name = "⚠️ รูปแบบการโจมตี"; value = "$Signals"; inline = $false }
@@ -785,33 +797,33 @@ function Validate-Key {
     
     # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV)
     if ($InputKey.Trim().ToUpper() -eq "DEV") {
-        Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "ผู้พัฒนา (ยศ DEV) เข้าสู่ระบบจัดการหลังบ้าน"
+        Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         return "MASTER"
     }
     
     $db = Load-KeyDB
     foreach ($entry in $db.keys) {
         if ($entry.key -eq $InputKey) {
-            $ownerNote = if ($entry.note) { $entry.note } else { "ไม่มีข้อมูล" }
+            $ownerNote = if ($entry.note) { $entry.note } else { "N/A" }
             if (-not $entry.hwid -or $entry.hwid -eq "" -or $entry.hwid -eq "UNBOUND") {
                 $entry.hwid = $CurrentHWID
                 $entry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
                 $entry.machine_name = $env:COMPUTERNAME
                 Save-KeyDB $db
-                Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "ลงทะเบียนคีย์ใหม่และล็อคกับเครื่อง $CurrentHWID ($($entry.machine_name))"
+                Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly bound to hardware $CurrentHWID ($($entry.machine_name))"
                 return "ACTIVATED"
             }
             elseif ($entry.hwid -eq $CurrentHWID) {
-                Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "ยืนยันคีย์สำเร็จ เครื่องตรงกับที่บันทึกไว้ ($CurrentHWID)"
+                Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
                 return "VALID"
             }
             else {
-                Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "คีย์นี้ล็อคไว้กับเครื่อง $($entry.hwid) ($($entry.machine_name)) แต่พยายามใช้กับเครื่อง $CurrentHWID"
+                Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $($entry.hwid) ($($entry.machine_name)), tried on $CurrentHWID"
                 return "HWID_MISMATCH"
             }
         }
     }
-    Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "ไม่พบคีย์นี้ในฐานข้อมูลระบบ"
+    Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key not found in database"
     return "INVALID"
 }
 
@@ -848,18 +860,18 @@ function Show-AdminPanel {
         $webhookStatus = if ($cfg.discord_webhook -and $cfg.discord_webhook.Trim() -ne "") { "[CONNECTED]" } else { "[NOT CONFIGURED]" }
 
         $Host.UI.RawUI.ForegroundColor = "Cyan"
-        Write-Host "  [1] สุ่มสร้างคีย์ใหม่ (Generate Key)"
-        Write-Host "  [2] ดูรายชื่อคีย์ทั้งหมดในระบบ (List All Keys)"
-        Write-Host "  [3] ลบคีย์ออกจากระบบ (Delete Key)"
-        Write-Host "  [4] ปลดล็อคเครื่อง HWID ให้คีย์เดิม (Reset HWID)"
-        Write-Host "  [5] ดูประวัติคนใช้งานคีย์        (หมวดหมู่ 1: Activation Logs)"
-        Write-Host "  [6] ดูประวัติคนพยายามแคร็กระบบ (หมวดหมู่ 2: Security Logs)"
-        Write-Host "  [7] ตั้งค่า Discord Webhook แจ้งเตือน   $webhookStatus"
-        Write-Host "  [8] ล้างประวัติ Log ทั้งหมด (Clear Logs)"
-        Write-Host "  [9] เริ่มต้นการปรับแต่ง FiveM & Windows (Run Optimization)"
+        Write-Host "  [1] Generate new key"
+        Write-Host "  [2] List all keys"
+        Write-Host "  [3] Delete a key"
+        Write-Host "  [4] Reset HWID on a key"
+        Write-Host "  [5] View Key Activation Logs    (หมวดหมู่ 1: คนใส่คีย์)"
+        Write-Host "  [6] View Anti-Crack Logs        (หมวดหมู่ 2: คนแคร็ก)"
+        Write-Host "  [7] Discord Webhook Settings   $webhookStatus"
+        Write-Host "  [8] Clear Logs"
+        Write-Host "  [9] Continue to RIEWJADDD SHOP optimization"
         Write-Host ""
         $Host.UI.RawUI.ForegroundColor = "White"
-        $choice = Read-Host "  เลือกเมนูที่ต้องการ"
+        $choice = Read-Host "  Select option"
         
         switch ($choice) {
             "1" {
@@ -992,28 +1004,28 @@ function Show-ActivationLogs {
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "Green"
     Write-Host "  ============================================"
-    Write-Host "  RIEWJADDD SHOP  -  ประวัติการใช้งานคีย์ (ACTIVATION LOGS)"
+    Write-Host "  RIEWJADDD SHOP  -  KEY ACTIVATION LOGS"
     Write-Host "  ============================================"
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "DarkGray"
-    Write-Host "  ไฟล์บันทึกประวัติ: $ActivationLogFile"
+    Write-Host "  Log File: $ActivationLogFile"
     Write-Host ""
     
     if (-not (Test-Path $ActivationLogFile) -or (Get-Item $ActivationLogFile).Length -eq 0) {
         $Host.UI.RawUI.ForegroundColor = "Yellow"
-        Write-Host "  ยังไม่มีประวัติการใช้งานคีย์ในระบบ"
+        Write-Host "  No activation logs recorded yet."
     } else {
         $lines = Get-Content $ActivationLogFile -Encoding UTF8
         foreach ($line in $lines) {
-            if ($line -match "ACTIVATED|ลงทะเบียนสำเร็จ") {
+            if ($line -match "ACTIVATED") {
                 Write-Host $line -ForegroundColor Green
-            } elseif ($line -match "VALID|คีย์ถูกต้อง") {
+            } elseif ($line -match "VALID") {
                 Write-Host $line -ForegroundColor Cyan
-            } elseif ($line -match "MASTER|ผู้พัฒนา|ยศ DEV") {
+            } elseif ($line -match "MASTER") {
                 Write-Host $line -ForegroundColor Magenta
-            } elseif ($line -match "HWID_MISMATCH|HWID ไม่ตรง") {
+            } elseif ($line -match "HWID_MISMATCH") {
                 Write-Host $line -ForegroundColor Yellow
-            } elseif ($line -match "INVALID|คีย์ไม่ถูกต้อง") {
+            } elseif ($line -match "INVALID") {
                 Write-Host $line -ForegroundColor Red
             } elseif ($line -match "^={5,}|^--{5,}") {
                 Write-Host $line -ForegroundColor DarkGray
@@ -1024,7 +1036,7 @@ function Show-ActivationLogs {
     }
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "White"
-    Read-Host "  กดปุ่ม Enter เพื่อกลับสู่เมนูผู้พัฒนา..."
+    Read-Host "  Press Enter to return to Admin Panel"
 }
 
 # -- Log Viewer: Security / Crack Threats ----------------
@@ -1033,20 +1045,20 @@ function Show-SecurityLogs {
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "Red"
     Write-Host "  ============================================"
-    Write-Host "  RIEWJADDD SHOP  -  ประวัติความปลอดภัยและการแคร็ก (SECURITY LOGS)"
+    Write-Host "  RIEWJADDD SHOP  -  SECURITY / CRACK LOGS"
     Write-Host "  ============================================"
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "DarkGray"
-    Write-Host "  ไฟล์บันทึกประวัติ: $SecurityLogFile"
+    Write-Host "  Log File: $SecurityLogFile"
     Write-Host ""
     
     if (-not (Test-Path $SecurityLogFile) -or (Get-Item $SecurityLogFile).Length -eq 0) {
         $Host.UI.RawUI.ForegroundColor = "Green"
-        Write-Host "  สถานะปลอดภัย! ยังไม่พบการพยายามแคร็กหรือภัยคุกคามในระบบ"
+        Write-Host "  Clean record! No security threats or crack attempts logged."
     } else {
         $lines = Get-Content $SecurityLogFile -Encoding UTF8
         foreach ($line in $lines) {
-            if ($line -match "CRITICAL|BSOD|THREAT|CRACK DETECTED|วิกฤต|แคร็ก") {
+            if ($line -match "CRITICAL|BSOD|THREAT|CRACK DETECTED") {
                 Write-Host $line -ForegroundColor Red
             } elseif ($line -match "SAFEGUARD") {
                 Write-Host $line -ForegroundColor Yellow
@@ -1059,7 +1071,7 @@ function Show-SecurityLogs {
     }
     Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "White"
-    Read-Host "  กดปุ่ม Enter เพื่อกลับสู่เมนูผู้พัฒนา..."
+    Read-Host "  Press Enter to return to Admin Panel"
 }
 
 # -- Discord Webhook Configuration -----------------------
@@ -1091,7 +1103,7 @@ function Configure-DiscordWebhook {
                 Save-GhostConfig $cfg
                 Write-Host ""
                 Write-Host "  Webhook saved successfully!" -ForegroundColor Green
-                Send-DiscordWebhook -Title "✅ RIEWJADDD Webhook Connected" -Description "Discord real-time logging connected successfully." -Color 65280 -Fields @(@{ name = "Machine"; value = $env:COMPUTERNAME; inline = $true }, @{ name = "User"; value = $env:USERNAME; inline = $true })
+                Send-DiscordWebhook -Title "✅ RIEWJADDD Webhook Connected" -Description "ระบบเชื่อมต่อ Discord Webhook สำหรับแจ้งเตือนการใช้งานสำเร็จเรียบร้อย" -Color 65280 -Fields @(@{ name = "💻 เครื่องคอม"; value = $env:COMPUTERNAME; inline = $true }, @{ name = "👤 ผู้ใช้"; value = $env:USERNAME; inline = $true })
                 Write-Host "  Test alert sent to Discord channel!" -ForegroundColor Cyan
             }
             Start-Sleep -Seconds 2
@@ -1101,7 +1113,7 @@ function Configure-DiscordWebhook {
                 Write-Host "  No webhook configured!" -ForegroundColor Red
             } else {
                 Write-Host "  Sending test embed..." -ForegroundColor Yellow
-                Send-DiscordWebhook -Title "🔔 RIEWJADDD SHOP: Test Ping" -Description "This is a test notification from RIEWJADDD SHOP Security Logging." -Color 3066993 -Fields @(@{ name = "Status"; value = "Operational"; inline = $true }, @{ name = "Machine"; value = $env:COMPUTERNAME; inline = $true })
+                Send-DiscordWebhook -Title "🔔 RIEWJADDD SHOP: ข้อความทดสอบ" -Description "นี่คือข้อความทดสอบการแจ้งเตือนจากระบบ RIEWJADDD SHOP" -Color 3066993 -Fields @(@{ name = "📌 สถานะ"; value = "ระบบทำงานปกติ"; inline = $true }, @{ name = "💻 เครื่องคอม"; value = $env:COMPUTERNAME; inline = $true })
                 Write-Host "  Test sent!" -ForegroundColor Green
             }
             Start-Sleep -Seconds 2
@@ -1119,11 +1131,11 @@ function Configure-DiscordWebhook {
 function Clear-GhostLogs {
     $Host.UI.RawUI.ForegroundColor = "Yellow"
     Write-Host ""
-    $confirm = Read-Host "  คุณแน่ใจหรือไม่ว่าต้องการล้างประวัติ Log ทั้งหมด? (Y/N)"
+    $confirm = Read-Host "  Are you sure you want to clear both logs? (Y/N)"
     if ($confirm.ToUpper() -eq "Y") {
         try { Remove-Item $ActivationLogFile -Force -ErrorAction SilentlyContinue } catch {}
         try { Remove-Item $SecurityLogFile -Force -ErrorAction SilentlyContinue } catch {}
-        Write-Host "  ล้างข้อมูลประวัติ Log เรียบร้อยแล้ว!" -ForegroundColor Green
+        Write-Host "  Logs cleared successfully." -ForegroundColor Green
     }
     Start-Sleep -Seconds 1
 }
@@ -1266,10 +1278,10 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     
     # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) --
     if ($inputKey -eq "DEV") {
-        Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "ผู้พัฒนา (ยศ DEV) เข้าสู่ระบบจัดการหลังบ้าน"
+        Write-AuthLog -Key $inputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         $Host.UI.RawUI.ForegroundColor = "Green"
         Write-Host ""
-        Write-Host "  [OK] MASTER KEY ACCEPTED - เข้าสู่ระบบจัดการหลังบ้าน (DEV ACCESS)"
+        Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
         Write-Host ""
         $authenticated = $true
         $global:_authLegit = $true
@@ -1310,7 +1322,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         "MASTER" {
             $Host.UI.RawUI.ForegroundColor = "Green"
             Write-Host ""
-            Write-Host "  [OK] MASTER KEY ACCEPTED - เข้าสู่ระบบจัดการหลังบ้าน (DEV ACCESS)"
+            Write-Host "  [OK] MASTER KEY ACCEPTED - DEV ACCESS GRANTED"
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
@@ -1323,7 +1335,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
             Write-Host ""
             Write-Host "  KEY ACTIVATED! Bound to this machine."
             Write-Host "  HWID: $CurrentHWID"
-            Write-Host "  [OK] เข้าสู่ระบบสำเร็จ กำลังเริ่มการปรับแต่ง FiveM & Windows..." -ForegroundColor Cyan
+            Write-Host "  [OK] Starting FiveM & Windows optimization..." -ForegroundColor Cyan
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
@@ -1334,7 +1346,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
             $Host.UI.RawUI.ForegroundColor = "Green"
             Write-Host ""
             Write-Host "  KEY VALID - Access granted."
-            Write-Host "  [OK] ตรวจสอบคีย์ถูกต้อง กำลังเริ่มการปรับแต่ง FiveM & Windows..." -ForegroundColor Cyan
+            Write-Host "  [OK] Key verified. Starting FiveM & Windows optimization..." -ForegroundColor Cyan
             Write-Host ""
             $authenticated = $true
             $global:_authLegit = $true
@@ -1344,14 +1356,14 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         "HWID_MISMATCH" {
             Draw-AuthScreen
             $Host.UI.RawUI.ForegroundColor = "DarkRed"
-            Write-Host "  [X] คีย์นี้ถูกล็อคกับเครื่องอื่นแล้ว ไม่สามารถใช้ซ้ำได้"
+            Write-Host "  Key locked to another machine."
             Write-Host ""
             $attempts++
         }
         "INVALID" {
             Draw-AuthScreen
             $Host.UI.RawUI.ForegroundColor = "Red"
-            Write-Host "  [X] คีย์ไม่ถูกต้อง! กรุณาใส่ License Key ที่ถูกต้องจากทางร้าน"
+            Write-Host "  Invalid key."
             Write-Host ""
             $attempts++
         }
@@ -1467,13 +1479,13 @@ $Host.UI.RawUI.ForegroundColor = "DarkGray"
 Write-Host "  ============================================"
 Write-Host ""
 Write-Host ""
-PulseBar "กำลังโหลดระบบ RIEWJADDD SHOP Core" 32
+PulseBar "Loading RIEWJADDD SHOP Core" 32
 Write-Host ""
 
 # ========================================================
 # HARDWARE DETECT
 # ========================================================
-Spin "กำลังตรวจสอบข้อมูลฮาร์ดแวร์..." 700
+Spin "Scanning hardware..." 700
 
 try { $cpuName = (Get-CimInstance Win32_Processor).Name.Trim() } catch { $cpuName = "Unknown CPU" }
 $global:CPUName = $cpuName
@@ -1501,15 +1513,15 @@ $fivemPaths = @("$env:LOCALAPPDATA\FiveM","$env:LOCALAPPDATA\FiveM\FiveM.app")
 $global:FiveMFound = $false; $global:FiveMPath = ""
 foreach ($fp in $fivemPaths) { if (Test-Path $fp) { $global:FiveMFound = $true; $global:FiveMPath = $fp; break } }
 
-if ($global:FiveMFound) { Write-Host "  " -NoNewline; Green "*"; White " FiveM : ตรวจพบตัวเกมในเครื่อง - $global:FiveMPath"; NL }
-else { Write-Host "  ~ FiveM : ไม่พบตัวเกมในเครื่อง (ข้ามการตั้งค่าเฉพาะ FiveM)" -ForegroundColor Yellow }
+if ($global:FiveMFound) { Write-Host "  " -NoNewline; Green "*"; White " FiveM : DETECTED - $global:FiveMPath"; NL }
+else { Write-Host "  ~ FiveM : NOT FOUND" -ForegroundColor Yellow }
 Write-Host ""
 
 $fivemRunning = Get-Process -Name "FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060" -ErrorAction SilentlyContinue
 if ($fivemRunning) {
     $ans = [System.Windows.Forms.MessageBox]::Show(
-        "ตรวจพบว่า FiveM หรือ GTA V กำลังเปิดทำงานอยู่!`nการตั้งค่าบางอย่างอาจไม่มีผลขณะเปิดเกมอยู่`nต้องการดำเนินการปรับแต่งต่อหรือไม่?",
-        "RIEWJADDD SHOP - แจ้งเตือน",
+        "FiveM / GTA5 is currently running!`nSome tweaks will NOT apply while the game is on.`nContinue anyway?",
+        "RIEWJADDD SHOP - Warning",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Warning
     )
@@ -1522,16 +1534,16 @@ if ($fivemRunning) {
 $Host.UI.RawUI.ForegroundColor = "DarkGray"
 Write-Host "  ============================================"
 $Host.UI.RawUI.ForegroundColor = "Red"
-Write-Host "  เริ่มกระบวนการปรับแต่ง RIEWJADDD SHOP เต็มระบบ"
+Write-Host "  ENGAGING RIEWJADDD SHOP OPTIMIZATION SEQUENCE"
 $Host.UI.RawUI.ForegroundColor = "DarkGray"
 Write-Host "  ============================================"
 Write-Host ""
 
-Spin "ปรับลำดับความสำคัญ CPU (Priority Separation)" 500
+Spin "CPU scheduling priority" 500
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v ConvertibleSlateMode    /t REG_DWORD /d 0  /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 22 /f 2>$null | Out-Null
 
-Spin "ปรับความเร็วการตอบสนองคีย์บอร์ด (Keyboard Response)" 450
+Spin "Keyboard response tuning" 450
 $kbPath = "HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters"
 reg add "$kbPath" /v ConnectMultiplePorts    /t REG_DWORD /d 0             /f 2>$null | Out-Null
 reg add "$kbPath" /v KeyboardDataQueueSize   /t REG_DWORD /d 16            /f 2>$null | Out-Null
@@ -1539,11 +1551,11 @@ reg add "$kbPath" /v KeyboardDeviceBaseName  /t REG_SZ    /d KeyboardClass /f 2>
 reg add "$kbPath" /v MaximumPortsServiced    /t REG_DWORD /d 3             /f 2>$null | Out-Null
 reg add "$kbPath" /v SendOutputToAllPorts    /t REG_DWORD /d 1             /f 2>$null | Out-Null
 
-Spin "ปิด GameDVR และระบบ Overlay ที่ลดทอน FPS" 400
+Spin "Removing FPS-killing overlays" 400
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\GameBar" /v ShowGameBar /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "ปิด Fullscreen Optimizations ลดอาการภาพหน่วง" 400
+Spin "Disabling fullscreen optimizations" 400
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehavior                   /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode               /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\System\GameConfigStore" /v GameDVR_HonorUserFSEBehaviorMode       /t REG_DWORD /d 1 /f 2>$null | Out-Null
@@ -1553,28 +1565,28 @@ foreach ($exe in @("FiveM.exe","GTA5.exe","fivem_web_b2060.exe")) {
     reg add "$layersPath" /v "C:\Program Files\Rockstar Games\Grand Theft Auto V\$exe" /t REG_SZ /d "~ DISABLEDXMAXIMIZEDWINDOWEDMODE" /f 2>$null | Out-Null
 }
 
-Spin "เปิดโหมดพลังงานประสิทธิภาพสูงสุด (Ultimate Performance)" 800
+Spin "Unlocking Ultimate Performance" 800
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if (-not $existingLine) { powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-Null }
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if ($existingLine) { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null | Out-Null }
 else               { powercfg -setactive SCHEME_MIN 2>$null | Out-Null }
 
-Spin "ปิดโหมดจำศีล (Hibernation) คืนพื้นที่ไดรฟ์" 350
+Spin "Disabling hibernation" 350
 powercfg -h off 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power" /v HibernateEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "จัดสรรและสำรอง RAM ให้ FiveM ดึงไปใช้สูงสุด" 400
+Spin "Reserving RAM for FiveM" 400
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) { Stop-Service SysMain -Force -ErrorAction SilentlyContinue; Set-Service SysMain -StartupType Disabled -ErrorAction SilentlyContinue }
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v LargeSystemCache /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit  /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "ล้างไฟล์ขยะและไฟล์ชั่วคราวในเครื่อง (Temp Files)" 500
+Spin "Nuking junk files" 500
 Remove-Item "$env:Temp\*"       -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-Spin "ปิดเอฟเฟกต์แอนิเมชัน Windows เพื่อความลื่นไหล" 400
+Spin "Stripping Windows animations" 400
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Desktop"               /v DragFullWindows   /t REG_SZ    /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Desktop"               /v MenuShowDelay     /t REG_SZ    /d 0 /f 2>$null | Out-Null
@@ -1585,7 +1597,7 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Ta
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v EnableAeroPeek            /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v AlwaysHibernateThumbnails /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "ปรับแต่ง Network Stack ลดค่า Ping (Low-Ping TCP)" 900
+Spin "Injecting low-ping network stack" 900
 netsh int tcp set global autotuninglevel=normal  2>$null | Out-Null
 netsh int tcp set global chimney=disabled        2>$null | Out-Null
 netsh int tcp set global ecncapability=disabled  2>$null | Out-Null
@@ -1623,7 +1635,7 @@ ipconfig /flushdns 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f 2>$null | Out-Null
 
-Spin "เร่งลำดับความสำคัญสัญญาณ IRQ ของการ์ดเน็ตเวิร์ก" 500
+Spin "Boosting IRQ priority" 500
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f 2>$null | Out-Null
 $netAdapters = Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match "Ethernet|Wi-Fi|Wireless|Network" -and $_.DeviceID -match "PCI" } | Select-Object -First 3
 foreach ($dev in $netAdapters) {
@@ -1636,7 +1648,7 @@ foreach ($dev in $netAdapters) {
     } catch {}
 }
 
-Spin "ตั้งค่าโปรไฟล์ระบบเพื่อการประมวลผลเกม (Gaming Profile)" 500
+Spin "Injecting game process profile" 500
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0   /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "GPU Priority"        /t REG_DWORD /d 8    /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v Priority              /t REG_DWORD /d 6    /f 2>$null | Out-Null
@@ -1644,16 +1656,16 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProf
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "SFIO Priority"       /t REG_SZ    /d High /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Background Only"     /t REG_SZ    /d False /f 2>$null | Out-Null
 
-Spin "เปิดใช้งานเมาส์แบบ Raw Input ปิดความเร่งเมาส์" 350
+Spin "Enabling raw mouse input" 350
 reg add "HKCU\Control Panel\Mouse" /v MouseSpeed      /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 0 /f 2>$null | Out-Null
 
-Spin "ปรับเสถียรภาพการทำงานของชิปประมวลผลกราฟิก (GPU)" 400
+Spin "GPU stability tuning" 400
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDelay    /t REG_DWORD /d 10 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 20 /f 2>$null | Out-Null
 
-Spin "ปรับแต่งประสิทธิภาพไดรเวอร์การ์ดจอ $GPUType" 600
+Spin "Applying $GPUType driver tweaks" 600
 if ($GPUType -eq "NVIDIA") {
     $nvPath = "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
     reg add "$nvPath" /v PowerMizerEnable  /t REG_DWORD /d 1 /f 2>$null | Out-Null
@@ -1665,7 +1677,7 @@ if ($GPUType -eq "NVIDIA") {
     reg add "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v KMD_EnableComputePreemption /t REG_DWORD /d 0 /f 2>$null | Out-Null
 }
 
-Spin "ตั้งค่าระดับความสำคัญ FiveM เป็นระดับสูง (HIGH Priority)" 400
+Spin "Setting FiveM process priority HIGH" 400
 $ifeoBase = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
 foreach ($exe in @("FiveM.exe","GTA5.exe")) {
     reg add "$ifeoBase\$exe\PerfOptions" /v CpuPriorityClass /t REG_DWORD /d 3 /f 2>$null | Out-Null
@@ -1676,7 +1688,7 @@ foreach ($name in @("FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060
     if ($proc) { try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch {} }
 }
 
-Spin "ปรับแต่ง Pagefile และตั้งค่า Timer Resolution 1ms" 500
+Spin "Optimizing pagefile + timer resolution" 500
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) {
     try {
@@ -1697,7 +1709,7 @@ public class TimerRes { [DllImport("winmm.dll")] public static extern uint timeB
 } catch {}
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" /v GlobalTimerResolutionRequests /t REG_DWORD /d 1 /f 2>$null | Out-Null
 
-Spin "ปลดล็อค Core Parking ปลุกทุกคอร์ และปิด HPET" 600
+Spin "Disabling core parking + HPET" 600
 $schemes = powercfg -list 2>$null | Select-String "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})" | ForEach-Object { $_.Matches[0].Value }
 foreach ($scheme in $schemes) {
     powercfg -setacvalueindex $scheme SUB_PROCESSOR CPMINCORES 100 2>$null | Out-Null
@@ -1713,7 +1725,7 @@ if ($hpetKey) {
     reg add "$hpetReg" /v DisableHPET /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
 
-Spin "ปรับแต่ง Prefetch และโหมดลดความหน่วง ($GPUType)" 500
+Spin "Tuning prefetch + NVIDIA Reflex" 500
 $pfPath = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
 reg add "$pfPath" /v EnablePrefetcher /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "$pfPath" /v EnableSuperfetch /t REG_DWORD /d 0 /f 2>$null | Out-Null
@@ -1725,14 +1737,14 @@ if ($GPUType -eq "NVIDIA") {
     reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\NVTweak" /v MaxFramesAllowed /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
 
-Spin "ปิดบริการดึงเน็ตเบื้องหลัง (Delivery Optimization)" 400
+Spin "Killing Windows bandwidth theft" 400
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadMode         /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadModeProvider /t REG_DWORD /d 0 /f 2>$null | Out-Null
 Stop-Service "DoSvc" -Force -ErrorAction SilentlyContinue
 Set-Service  "DoSvc" -StartupType Disabled -ErrorAction SilentlyContinue
 
-Spin "เพิ่ม FiveM ในรายการยกเว้นของ Windows Defender" 400
+Spin "Adding FiveM to Defender exclusions" 400
 try {
     $defSvc = Get-Service "WinDefend" -ErrorAction SilentlyContinue
     if ($defSvc -and $defSvc.Status -eq "Running") {
@@ -1740,14 +1752,14 @@ try {
     }
 } catch {}
 
-Spin "ล้างแคชสตรีมและข้อมูลตกค้างของ FiveM" 500
+Spin "Wiping FiveM stream cache" 500
 if ($global:FiveMFound) {
     foreach ($cp in @("$env:LOCALAPPDATA\FiveM\FiveM.app\data\cache","$env:LOCALAPPDATA\FiveM\FiveM.app\logs")) {
         if (Test-Path $cp) { Get-ChildItem -Path $cp -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
-Spin "ล้างและสร้าง Shader Cache ใหม่ ($GPUType)" 500
+Spin "Rebuilding $GPUType shader cache" 500
 if ($GPUType -eq "NVIDIA") {
     foreach ($p in @("$env:LOCALAPPDATA\NVIDIA\DXCache","$env:LOCALAPPDATA\NVIDIA\GLCache")) {
         if (Test-Path $p) { Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
@@ -1762,53 +1774,53 @@ if ($GPUType -eq "NVIDIA") {
 # OUTRO
 # ========================================================
 Write-Host ""
-PulseBar "กำลังสรุปผลการปรับแต่ง RIEWJADDD SHOP" 32
+PulseBar "Finalizing RIEWJADDD SHOP" 32
 Write-Host ""
 
 $Host.UI.RawUI.ForegroundColor = "DarkGray"
 Write-Host "  ============================================"
-Flicker "  RIEWJADDD SHOP ปรับแต่งระบบสำเร็จเรียบร้อย!" 5
+Flicker "  RIEWJADDD SHOP OPTIMIZATION COMPLETE" 5
 $Host.UI.RawUI.ForegroundColor = "DarkGray"
 Write-Host "  ============================================"
 Write-Host ""
 
 $items = @(
-    "ปลดล็อค Core Parking ปลุกทุกคอร์ CPU ให้ทำงานเต็ม 100%"
-    "ปิด HPET ลดความหน่วงและอาการกระตุกของระบบ"
-    "ปรับแต่งการตอบสนองคีย์บอร์ดให้กดติดมือ ไวทันใจ"
-    "ปิด Overlay และ GameDVR ที่ทำให้เฟรมเรตตก"
-    "ปิด Fullscreen Optimizations ลดอาการ Input Lag"
-    "ปิดระบบโหมดจำศีล (Hibernation) คืนพื้นที่ไดรฟ์"
-    "จัดสรรและเคลียร์ RAM ให้ FiveM ดึงไปใช้ได้เต็มที่"
-    "ปิดแอนิเมชัน Windows เพื่อความลื่นไหลระดับสูงสุด"
-    "ปรับระบบ TCP Stack ส่งแพ็กเก็ตไว ลดค่า Ping"
-    "เร่งลำดับความสำคัญ IRQ Priority ของการ์ดแลน/Wi-Fi"
-    "ปิด Nagle's Algorithm ส่งข้อมูลไปยังเซิร์ฟเวอร์ทันที"
-    "ตั้งค่าโพรเซส FiveM ในระดับ HIGH CPU Priority"
-    "ปรับแต่งการทำงานของไดรเวอร์การ์ดจอ $GPUType"
-    "ตั้งค่าเมาส์ Raw Input แม่นยำ ไม่เร่งความเร็ว"
-    "ปรับแต่ง Prefetch โหลดแมพและโมเดล FiveM ไวขึ้น"
-    "ปิดบริการดึงเน็ตเบื้องหลังของ Windows (Delivery Optimization)"
-    "เพิ่มโฟลเดอร์ FiveM ในข้อยกเว้นของ Defender"
-    "ปรับปรุง Pagefile และตั้งเวลา Timer Resolution 1ms"
-    "ล้างไฟล์แคชสตรีมและ Shader Cache สะอาดหมดจด"
+    "CPU scheduling + core parking OFF"
+    "HPET disabled"
+    "Keyboard response optimized"
+    "FPS-killing overlays removed"
+    "Fullscreen optimizations disabled"
+    "Hibernation disabled"
+    "RAM reserved for FiveM"
+    "Windows animations stripped"
+    "Low-ping TCP stack injected"
+    "IRQ priority maximized"
+    "Nagle OFF - packets fly to server"
+    "FiveM at HIGH CPU priority"
+    "$GPUType driver tweaks applied"
+    "Raw mouse - zero acceleration"
+    "Prefetch tuned for FiveM"
+    "P2P bandwidth theft stopped"
+    "Defender exclusion added"
+    "Pagefile fixed + Timer 1ms"
+    "Stream + shader cache rebuilt"
 )
 
 foreach ($item in $items) { DONE_LINE $item; Start-Sleep -Milliseconds 35 }
 
 Write-Host ""
 $Host.UI.RawUI.ForegroundColor = "Red"
-Write-Host "  [!] แนะนำให้รีสตาร์ทคอมพิวเตอร์ เพื่อให้การปรับแต่งมีผล 100% แล้วเข้าเล่น FiveM ได้เลย"
+Write-Host "  REBOOT RECOMMENDED - then drop into FiveM."
 Write-Host ""
 
 # -- Reboot prompt ----------------------------------------
 $reboot = [System.Windows.Forms.MessageBox]::Show(
-    "RIEWJADDD SHOP v$GHOST_VERSION ปรับแต่งเสร็จสิ้นแล้ว!`n`nต้องการรีสตาร์ทเครื่องตอนนี้เพื่อให้การตั้งค่ามีผลสมบูรณ์หรือไม่?",
+    "RIEWJADDD SHOP v$GHOST_VERSION Complete!`n`nReboot now for full effect?",
     "RIEWJADDD SHOP",
     [System.Windows.Forms.MessageBoxButtons]::YesNo,
     [System.Windows.Forms.MessageBoxIcon]::Information
 )
-Write-Host "  บันทึกประวัติการทำงานไว้ที่: $LogPath" -ForegroundColor DarkGray
+Write-Host "  Log saved to: $LogPath" -ForegroundColor DarkGray
 try { Stop-Transcript | Out-Null } catch {}
 
 if ($reboot -eq [System.Windows.Forms.DialogResult]::Yes) {
