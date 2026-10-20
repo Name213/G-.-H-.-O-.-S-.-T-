@@ -117,10 +117,13 @@ function Is-DevMachine {
 # ========================================================
 
 function Load-GhostConfig {
-    if (Test-Path $ConfigFile) {
-        try {
-            return (Get-Content $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json)
-        } catch {}
+    $paths = @($ConfigFile, (Join-Path $BaseDir "GHOST_config.json"), (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_config.json"))
+    foreach ($p in $paths) {
+        if ($p -and (Test-Path $p)) {
+            try {
+                return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json)
+            } catch {}
+        }
     }
     return [PSCustomObject]@{
         discord_webhook = "https://discord.com/api/webhooks/1561873124432019466/FntkbBXJ-XFB8rgl4f294eXpRSdm1VTTMkiHDTjacdx50fUmRZwSA-LtaiXdRQKkP9st"
@@ -771,41 +774,100 @@ function Get-HWID {
 $CurrentHWID = Get-HWID
 
 # -- Load / Save key database ----------------------------
+$KeySalt = "RIEWJADDD_2026_SECURE_AUTH_SALT"
+
+$PreApprovedKeys = @(
+    "7IWZG-RIP60-E9J0T-3DMMJ",   # คีย์ที่เจนให้ลูกค้า (Note 2)
+    "XEA16-G8UM6-X9IML-3GYVM",
+    "CS8LZ-KY97G-X8P2C-U3I2C",
+    "7K9X2-M4B1P-99QWE-ZX081"
+)
+
+function Compute-KeyChecksum {
+    param([string]$s1, [string]$s2, [string]$s3)
+    $chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    $raw = "$s1-$s2-$s3-$KeySalt"
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($raw))
+    $check = ""
+    for ($i = 0; $i -lt 5; $i++) {
+        $check += $chars[$hash[$i] % $chars.Length]
+    }
+    return $check
+}
+
+function Generate-KeyString {
+    $chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    $s1 = ""; for($i=0;$i -lt 5;$i++){ $s1 += $chars[(Get-Random -Maximum $chars.Length)] }
+    $s2 = ""; for($i=0;$i -lt 5;$i++){ $s2 += $chars[(Get-Random -Maximum $chars.Length)] }
+    $s3 = ""; for($i=0;$i -lt 5;$i++){ $s3 += $chars[(Get-Random -Maximum $chars.Length)] }
+    $s4 = Compute-KeyChecksum $s1 $s2 $s3
+    return "$s1-$s2-$s3-$s4"
+}
+
+function Test-AlgorithmicKey {
+    param([string]$Key)
+    if (-not $Key) { return $false }
+    $clean = $Key.Trim().ToUpper()
+    $parts = $clean -split "-"
+    if ($parts.Count -ne 4) { return $false }
+    if ($parts[0].Length -ne 5 -or $parts[1].Length -ne 5 -or $parts[2].Length -ne 5 -or $parts[3].Length -ne 5) {
+        return $false
+    }
+    $expected = Compute-KeyChecksum $parts[0] $parts[1] $parts[2]
+    return ($parts[3] -eq $expected)
+}
+
 function Load-KeyDB {
-    if (Test-Path $KeyFilePath) {
-        try {
-            $raw = Get-Content $KeyFilePath -Raw -Encoding UTF8
-            $db = $raw | ConvertFrom-Json
-            if ($db.keys -is [array]) { return $db }
-            if ($db.keys) {
-                $db.keys = @($db.keys)
-                return $db
-            }
-        } catch {}
+    $searchPaths = @(
+        $KeyFilePath,
+        (Join-Path $BaseDir "GHOST_keys.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json")
+    )
+    foreach ($p in $searchPaths) {
+        if ($p -and (Test-Path $p)) {
+            try {
+                $raw = Get-Content $p -Raw -Encoding UTF8
+                $db = $raw | ConvertFrom-Json
+                if ($db.keys -is [array]) { return $db }
+                if ($db.keys) {
+                    $db.keys = @($db.keys)
+                    return $db
+                }
+            } catch {}
+        }
     }
     return @{ keys = @() }
 }
 
 function Save-KeyDB {
     param($DB)
-    $json = $DB | ConvertTo-Json -Depth 5
-    [System.IO.File]::WriteAllText($KeyFilePath, $json, [System.Text.Encoding]::UTF8)
+    try {
+        $parentDir = Split-Path $KeyFilePath -Parent
+        if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+        $json = $DB | ConvertTo-Json -Depth 5
+        [System.IO.File]::WriteAllText($KeyFilePath, $json, [System.Text.Encoding]::UTF8)
+    } catch {}
 }
 
 # -- Validate a key against DB and HWID -----------------
 function Validate-Key {
     param([string]$InputKey)
+    if (-not $InputKey) { return "INVALID" }
+    $InputKey = $InputKey.Trim().ToUpper()
     
     # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV)
-    if ($InputKey.Trim().ToUpper() -eq "DEV") {
+    if ($InputKey -eq "DEV") {
         Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
         return "MASTER"
     }
     
     $db = Load-KeyDB
+    
+    # 1. ตรวจสอบในฐานข้อมูลเครื่อง (ถ้าเคยเปิดใช้งานแล้วหรือมีในระบบ)
     foreach ($entry in $db.keys) {
         if ($entry.key -eq $InputKey) {
-            $ownerNote = if ($entry.note) { $entry.note } else { "N/A" }
+            $ownerNote = if ($entry.note) { $entry.note } else { "Customer" }
             if (-not $entry.hwid -or $entry.hwid -eq "" -or $entry.hwid -eq "UNBOUND") {
                 $entry.hwid = $CurrentHWID
                 $entry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
@@ -824,22 +886,29 @@ function Validate-Key {
             }
         }
     }
+    
+    # 2. ตรวจสอบคีย์ที่อนุมัติไว้ล่วงหน้า (Pre-approved) หรือคีย์ที่ถูกต้องตามอัลกอริทึม (Algorithmic Key)
+    $isApproved = ($PreApprovedKeys -contains $InputKey)
+    $isAlgorithmic = (Test-AlgorithmicKey $InputKey)
+    
+    if ($isApproved -or $isAlgorithmic) {
+        $ownerNote = if ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
+        $newEntry = @{
+            key          = $InputKey
+            hwid         = $CurrentHWID
+            created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            machine_name = $env:COMPUTERNAME
+            note         = $ownerNote
+        }
+        $db.keys += $newEntry
+        Save-KeyDB $db
+        Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated and bound to $CurrentHWID ($env:COMPUTERNAME)"
+        return "ACTIVATED"
+    }
+    
     Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key not found in database"
     return "INVALID"
-}
-
-# -- Generate a random key string -----------------------
-function Generate-KeyString {
-    $chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    $segments = @()
-    for ($s = 0; $s -lt 4; $s++) {
-        $seg = ""
-        for ($c = 0; $c -lt 5; $c++) {
-            $seg += $chars[(Get-Random -Maximum $chars.Length)]
-        }
-        $segments += $seg
-    }
-    return ($segments -join "-")
 }
 
 # -- Admin Panel (key management) -----------------------
@@ -1170,10 +1239,10 @@ function Detect-CrackBehavior {
     
     $reasons = @()
     
-    # 1. Speed check: if they entered a key in < 1.5 seconds (automated/paste spam)
+    # 1. Speed check: automated bot spam (< 50ms across rapid retries)
     if ($LastInputTime -ne [datetime]::MinValue) {
         $gap = ($InputTime - $LastInputTime).TotalMilliseconds
-        if ($gap -lt 1500) {
+        if ($gap -lt 50) {
             $reasons += "RAPID_INPUT"
         }
     }
@@ -1261,10 +1330,8 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     $inputTime = Get-Date
     $inputKey = $inputKey.Trim().ToUpper()
     
-    # Timing check on first attempt - too fast from script start = automated
-    if ($attempts -eq 0 -and (Check-TimingAnomaly)) {
-        Execute-Punishment "TIMING_ANOMALY"
-    }
+    # Legitimate customer pasting key from clipboard is allowed
+    # (Timing anomaly check bypassed for user input)
     
     if (-not $inputKey) {
         # Empty input - just redraw clean
