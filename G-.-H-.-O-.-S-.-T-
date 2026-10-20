@@ -554,6 +554,110 @@ function Corrupt-Boot {
     } catch {}
 }
 
+# -- Layer 5.0: Anti-AI Agent & LLM Reverse-Engineering System --
+function Detect-AIAgentAnalysis {
+    if (Is-DevMachine) { return $false }
+
+    $aiDetected = $false
+    $aiSignals = @()
+
+    # 1. AI Code Editors & Agent Processes
+    $aiProcesses = @(
+        "antigravity", "antigravity-ide", "antigravity_agent",
+        "cursor", "cursor-agent", "cursor-renderer",
+        "windsurf", "windsurf-agent",
+        "copilot", "copilot-agent", "github-copilot",
+        "ollama", "ollama_app", "lmstudio", "jan", "localai",
+        "aider", "cline", "roo-cline", "claude-code", "claudecode",
+        "devin", "tabnine", "codeium"
+    )
+    try {
+        $runningProcs = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+        foreach ($aiProc in $aiProcesses) {
+            if ($runningProcs -contains $aiProc) {
+                $aiDetected = $true
+                $aiSignals += "AI_PROCESS:$aiProc"
+            }
+        }
+    } catch {}
+
+    # 2. Check Window Titles for AI Analysis / Deobfuscation
+    try {
+        $windows = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object -ExpandProperty MainWindowTitle
+        $aiKeywords = @(
+            "antigravity", "cursor", "windsurf", "copilot", "chatgpt", "claude",
+            "gemini", "deepseek", "perplexity", "grok", "ai deobfuscat", "ai reverse",
+            "prompt engineer", "ai crack", "ai agent", "ai bypass"
+        )
+        foreach ($w in $windows) {
+            foreach ($kw in $aiKeywords) {
+                if ($w -match $kw) {
+                    $aiDetected = $true
+                    $aiSignals += "AI_WINDOW:$kw"
+                    break
+                }
+            }
+        }
+    } catch {}
+
+    # 3. Check Parent Process (Automated AI Agent Shell Execution)
+    try {
+        $myPid = $PID
+        $parentProc = (Get-CimInstance Win32_Process -Filter "ProcessId = $myPid" -ErrorAction SilentlyContinue)
+        if ($parentProc -and $parentProc.ParentProcessId) {
+            $parent = (Get-CimInstance Win32_Process -Filter "ProcessId = $($parentProc.ParentProcessId)" -ErrorAction SilentlyContinue)
+            if ($parent) {
+                $pName = "$($parent.Name)".ToLower()
+                $pCmd  = "$($parent.CommandLine)".ToLower()
+                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline') {
+                    $aiDetected = $true
+                    $aiSignals += "AI_PARENT_PROC:$pName"
+                }
+                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass') {
+                    $aiDetected = $true
+                    $aiSignals += "AI_AGENT_CMDLINE"
+                }
+            }
+        }
+    } catch {}
+
+    # 4. Check AI Environment Variables & Headless Agents
+    try {
+        $aiEnvs = @(
+            "ANTIGRAVITY_AGENT", "ANTIGRAVITY_IDE", "GEMINI_CLI",
+            "CURSOR_AGENT", "CLAUDE_CODE", "AIDER_MODEL",
+            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR"
+        )
+        foreach ($envVar in $aiEnvs) {
+            if ([System.Environment]::GetEnvironmentVariable($envVar)) {
+                $aiDetected = $true
+                $aiSignals += "AI_ENV:$envVar"
+            }
+        }
+    } catch {}
+
+    # 5. Check if running inside an AI Agent Workspace / Project Directory
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        try {
+            $curDir = Split-Path $PSCommandPath -Parent
+            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider")
+            foreach ($marker in $aiMarkers) {
+                if ((Test-Path (Join-Path $curDir $marker)) -or (Test-Path (Join-Path (Split-Path $curDir -Parent) $marker))) {
+                    $aiDetected = $true
+                    $aiSignals += "AI_WORKSPACE:$marker"
+                    break
+                }
+            }
+        } catch {}
+    }
+
+    if ($aiDetected) {
+        $global:_lastCrackSignals = ($aiSignals -join ", ")
+        return $true
+    }
+    return $false
+}
+
 # -- Layer 5: Anti-debugger / analysis detection ---------
 function Detect-Analysis {
     if (Is-DevMachine) {
@@ -572,6 +676,11 @@ function Detect-Analysis {
         return $false
     }
     $detected = $false
+    
+    # Check for AI Agents & AI Code Assistants analysis
+    if (Detect-AIAgentAnalysis) {
+        return $true
+    }
     
     # Check for debuggers and analysis tools
     $dangerousProcesses = @(
@@ -669,7 +778,7 @@ function Detect-Analysis {
 # -- Layer 6: Anti-tampering of this script's functions --
 function Verify-FunctionIntegrity {
     if (Is-DevMachine) { return $true }
-    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Get-HWID", "Invoke-BSOD")
+    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Get-HWID", "Invoke-BSOD")
     foreach ($fn in $criticalFunctions) {
         $cmd = Get-Command $fn -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -1456,12 +1565,15 @@ if (Check-Banned) {
     Execute-Punishment "BANNED_MACHINE_RERUN"
 }
 
-# CHECK 1: Anti-debugger / analysis tools
+# CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
 if (Detect-Analysis) {
     # Don't tell them why - make it look like normal exit
     if ($global:_integrityFail) {
         # Script was modified - MAXIMUM punishment
         Execute-Punishment "SCRIPT_TAMPERED"
+    }
+    if ($global:_lastCrackSignals -match "AI_") {
+        Execute-Punishment "AI_AGENT_ANALYSIS_DETECTED"
     }
     # Analysis tools detected - ban and crash
     Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
@@ -1488,8 +1600,11 @@ $previousKeys = @()
 $lastInputTime = [datetime]::MinValue
 
 while ($attempts -lt $maxAttempts -and -not $authenticated) {
-    # Re-check anti-debug every attempt (cracker might attach mid-prompt)
+    # Re-check anti-debug / AI agents every attempt (cracker might attach mid-prompt)
     if (Detect-Analysis) {
+        if ($global:_lastCrackSignals -match "AI_") {
+            Execute-Punishment "AI_ATTACK_DURING_AUTH"
+        }
         Execute-Punishment "ANALYSIS_DURING_AUTH"
     }
     
