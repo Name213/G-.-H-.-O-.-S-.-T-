@@ -850,6 +850,30 @@ function Save-KeyDB {
     } catch {}
 }
 
+# -- Cloud Central KeyAuth (1 Key = 1 Machine HWID Lock) --
+$CloudAuthAppKey = "t44dc3km"
+
+function Get-CloudHWID {
+    param([string]$Key)
+    try {
+        $url = "https://keyvalue.immanuel.co/api/KeyVal/GetValue/$CloudAuthAppKey/$Key"
+        $val = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 4 -ErrorAction Stop
+        if ($val) { return "$val".Trim('"', ' ') }
+    } catch {}
+    return $null
+}
+
+function Set-CloudHWID {
+    param([string]$Key, [string]$Hwid)
+    try {
+        $url = "https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/$CloudAuthAppKey/$Key/$Hwid"
+        $res = Invoke-RestMethod -Uri $url -Method Post -Body "" -TimeoutSec 4 -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # -- Validate a key against DB and HWID -----------------
 function Validate-Key {
     param([string]$InputKey)
@@ -868,52 +892,62 @@ function Validate-Key {
     }
     
     $db = Load-KeyDB
-    
-    # 1. ตรวจสอบในฐานข้อมูลเครื่อง (ถ้าเคยเปิดใช้งานแล้วหรือมีในระบบ)
+    $localEntry = $null
     foreach ($entry in $db.keys) {
         if ($entry.key -eq $InputKey) {
-            $ownerNote = if ($entry.note) { $entry.note } else { "Customer" }
-            if (-not $entry.hwid -or $entry.hwid -eq "" -or $entry.hwid -eq "UNBOUND") {
-                $entry.hwid = $CurrentHWID
-                $entry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                $entry.machine_name = $env:COMPUTERNAME
-                Save-KeyDB $db
-                Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly bound to hardware $CurrentHWID ($($entry.machine_name))"
-                return "ACTIVATED"
-            }
-            elseif ($entry.hwid -eq $CurrentHWID) {
-                Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
-                return "VALID"
-            }
-            else {
-                Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $($entry.hwid) ($($entry.machine_name)), tried on $CurrentHWID"
-                return "HWID_MISMATCH"
-            }
+            $localEntry = $entry
+            break
         }
     }
     
-    # 2. ตรวจสอบคีย์ที่อนุมัติไว้ล่วงหน้า (Pre-approved) หรือคีย์ที่ถูกต้องตามอัลกอริทึม (Algorithmic Key)
     $isApproved = ($PreApprovedKeys -contains $InputKey)
     $isAlgorithmic = (Test-AlgorithmicKey $InputKey)
     
-    if ($isApproved -or $isAlgorithmic) {
-        $ownerNote = if ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
-        $newEntry = @{
-            key          = $InputKey
-            hwid         = $CurrentHWID
-            created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            machine_name = $env:COMPUTERNAME
-            note         = $ownerNote
+    if (-not $localEntry -and -not $isApproved -and -not $isAlgorithmic) {
+        Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key signature invalid"
+        return "INVALID"
+    }
+    
+    # ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
+    $cloudHwid = Get-CloudHWID $InputKey
+    
+    # กรณี 1: คีย์ยังไม่เคยผูกกับเครื่องไหน หรือถูก Developer รีเซ็ต HWID เป็น UNBOUND
+    if (-not $cloudHwid -or $cloudHwid -eq "UNBOUND" -or $cloudHwid -eq "") {
+        Set-CloudHWID $InputKey $CurrentHWID | Out-Null
+        
+        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } elseif ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
+        if (-not $localEntry) {
+            $localEntry = @{
+                key          = $InputKey
+                hwid         = $CurrentHWID
+                created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                machine_name = $env:COMPUTERNAME
+                note         = $ownerNote
+            }
+            $db.keys += $localEntry
+        } else {
+            $localEntry.hwid = $CurrentHWID
+            $localEntry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            $localEntry.machine_name = $env:COMPUTERNAME
         }
-        $db.keys += $newEntry
         Save-KeyDB $db
-        Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated and bound to $CurrentHWID ($env:COMPUTERNAME)"
+        
+        Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated & locked to hardware $CurrentHWID ($env:COMPUTERNAME)"
         return "ACTIVATED"
     }
     
-    Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key not found in database"
-    return "INVALID"
+    # กรณี 2: คีย์ถูกผูกไว้แล้ว และ HWID บน Cloud ตรงกับเครื่องนี้
+    if ($cloudHwid -eq $CurrentHWID) {
+        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Customer" }
+        Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
+        return "VALID"
+    }
+    
+    # กรณี 3: คีย์ถูกผูกไว้กับเครื่องอื่นแล้ว! (นำไปใส่เครื่องอื่น -> ล็อคไม่ให้เข้า)
+    $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }
+    Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $cloudHwid, tried on $CurrentHWID ($env:COMPUTERNAME)"
+    return "HWID_MISMATCH"
 }
 
 # -- Admin Panel (key management) -----------------------
@@ -964,6 +998,9 @@ function Show-AdminPanel {
                 $note = Read-Host "  Note / Customer Name for this key (Enter to skip)"
                 if ($note) { $keyEntry.note = $note }
                 
+                # บันทึกสถานะตั้งต้นใน Cloud เป็น UNBOUND
+                Set-CloudHWID $newKey "UNBOUND" | Out-Null
+                
                 $db.keys += $keyEntry
                 Save-KeyDB $db
                 
@@ -972,6 +1009,7 @@ function Show-AdminPanel {
                 Write-Host "  NEW KEY GENERATED: $newKey"
                 Write-Host "  Owner / Note    : $(if ($keyEntry.note) { $keyEntry.note } else { 'N/A' })"
                 Write-Host "  Status          : UNBOUND (will lock to first machine that uses it)"
+                Write-Host "  Cloud Lock      : ACTIVE (1 Key = 1 Machine)" -ForegroundColor Cyan
                 Write-Host ""
             }
             "2" {
@@ -1007,6 +1045,10 @@ function Show-AdminPanel {
                 } else {
                     $Host.UI.RawUI.ForegroundColor = "White"
                     $delKey = Read-Host "  Enter key to delete"
+                    $delKey = $delKey.Trim().ToUpper()
+                    
+                    Set-CloudHWID $delKey "DELETED_KEY" | Out-Null
+                    
                     $newKeys = @()
                     $found = $false
                     foreach ($entry in $db.keys) {
@@ -1017,7 +1059,7 @@ function Show-AdminPanel {
                         $db.keys = $newKeys
                         Save-KeyDB $db
                         $Host.UI.RawUI.ForegroundColor = "Green"
-                        Write-Host "  Key deleted."
+                        Write-Host "  Key deleted from Local & Cloud."
                     } else {
                         $Host.UI.RawUI.ForegroundColor = "Red"
                         Write-Host "  Key not found."
@@ -1029,6 +1071,11 @@ function Show-AdminPanel {
                 $db = Load-KeyDB
                 $Host.UI.RawUI.ForegroundColor = "White"
                 $resetKey = Read-Host "  Enter key to reset HWID"
+                $resetKey = $resetKey.Trim().ToUpper()
+                
+                # รีเซ็ตสถานะบน Cloud เป็น UNBOUND ทันที!
+                Set-CloudHWID $resetKey "UNBOUND" | Out-Null
+                
                 $found = $false
                 foreach ($entry in $db.keys) {
                     if ($entry.key -eq $resetKey) {
@@ -1039,14 +1086,13 @@ function Show-AdminPanel {
                         break
                     }
                 }
-                if ($found) {
-                    Save-KeyDB $db
-                    $Host.UI.RawUI.ForegroundColor = "Green"
-                    Write-Host "  HWID reset. Key is now unbound."
-                } else {
-                    $Host.UI.RawUI.ForegroundColor = "Red"
-                    Write-Host "  Key not found."
-                }
+                Save-KeyDB $db
+                
+                Write-Host ""
+                $Host.UI.RawUI.ForegroundColor = "Green"
+                Write-Host "  [OK] HWID RESET SUCCESSFUL!"
+                Write-Host "  Key: $resetKey is now UNBOUND on Cloud & Local."
+                Write-Host "  Customer can now activate on their new machine." -ForegroundColor Cyan
                 Write-Host ""
             }
             "5" {
@@ -1451,7 +1497,9 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         "HWID_MISMATCH" {
             Draw-AuthScreen
             $Host.UI.RawUI.ForegroundColor = "DarkRed"
-            Write-Host "  Key locked to another machine."
+            Write-Host "  [KEY LOCKED] This key is already bound to another machine."
+            Write-Host "  Each license key can only be used on 1 machine." -ForegroundColor Yellow
+            Write-Host "  Please contact shop to reset HWID." -ForegroundColor DarkGray
             Write-Host ""
             $attempts++
         }
