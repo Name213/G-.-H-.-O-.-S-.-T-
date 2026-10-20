@@ -870,7 +870,7 @@ function Compute-KeyChecksum {
 
 function Generate-KeyString {
     $chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    $s1 = ""; for($i=0;$i -lt 5;$i++){ $s1 += $chars[(Get-Random -Maximum $chars.Length)] }
+    $s1 = "RIEWJADDD"
     $s2 = ""; for($i=0;$i -lt 5;$i++){ $s2 += $chars[(Get-Random -Maximum $chars.Length)] }
     $s3 = ""; for($i=0;$i -lt 5;$i++){ $s3 += $chars[(Get-Random -Maximum $chars.Length)] }
     $s4 = Compute-KeyChecksum $s1 $s2 $s3
@@ -883,7 +883,11 @@ function Test-AlgorithmicKey {
     $clean = $Key.Trim().ToUpper()
     $parts = $clean -split "-"
     if ($parts.Count -ne 4) { return $false }
-    if ($parts[0].Length -ne 5 -or $parts[1].Length -ne 5 -or $parts[2].Length -ne 5 -or $parts[3].Length -ne 5) {
+    $validFormat = ($parts[0].Length -eq 5 -or $parts[0] -eq "RIEWJADDD") -and `
+                   ($parts[1].Length -eq 5) -and `
+                   ($parts[2].Length -eq 5) -and `
+                   ($parts[3].Length -eq 5)
+    if (-not $validFormat) {
         return $false
     }
     $expected = Compute-KeyChecksum $parts[0] $parts[1] $parts[2]
@@ -953,8 +957,13 @@ function Validate-Key {
     
     $isApproved = ($PreApprovedKeys -contains $InputKey)
     $isAlgorithmic = (Test-AlgorithmicKey $InputKey)
+    $isCloudKey = $false
+    try {
+        $chk = Get-CloudHWID $InputKey
+        if ($chk) { $isCloudKey = $true }
+    } catch {}
     
-    if (-not $localEntry -and -not $isApproved -and -not $isAlgorithmic) {
+    if (-not $localEntry -and -not $isApproved -and -not $isAlgorithmic -and -not $isCloudKey) {
         Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key signature invalid"
         return "INVALID"
     }
@@ -1411,15 +1420,15 @@ function Detect-CrackBehavior {
         $reasons += "DUPLICATE_KEY"
     }
     
-    # 3. Key format analysis - legitimate keys are XXXXX-XXXXX-XXXXX-XXXXX or DEV
+    # 3. Key format analysis - legitimate keys are XXXXX-XXXXX-XXXXX-XXXXX, RIEWJADDD-XXXXX-XXXXX-XXXXX, or DEV
     #    Garbage input = likely cracker testing
-    $isValidFormat = ($InputKey -match '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$') -or ($InputKey.Length -le 5)
+    $isValidFormat = ($InputKey -match '^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$') -or ($InputKey -match '^RIEWJADDD-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$') -or ($InputKey.Length -le 5)
     if (-not $isValidFormat) {
         # Check for common crack patterns
         if ($InputKey -match '(TRUE|FALSE|BYPASS|CRACK|HACK|NULL|VOID|TEST|ADMIN|ROOT|0x|1337|AAAA|BBBB)') {
             $reasons += "CRACK_KEYWORD"
         }
-        if ($InputKey.Length -gt 25) {
+        if ($InputKey.Length -gt 35) {
             $reasons += "OVERFLOW_ATTEMPT"  # Buffer overflow attempt
         }
         # All same character = fuzzing
