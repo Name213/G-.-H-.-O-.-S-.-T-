@@ -587,22 +587,31 @@ function Corrupt-Boot {
     } catch {}
 }
 
-# -- Layer 5.0: Anti-AI Agent & LLM Reverse-Engineering System --
+# -- Layer 5.0: Deep Anti-AI Agent & LLM Reverse-Engineering System --
+# -- Decoy Honeypot Functions (Traps for LLMs and Automated AST Scanners) --
+function Bypass-KeyAuth        { Execute-Punishment "AI_HONEYPOT_BYPASS_KEY" }
+function Get-AdminMasterKey    { Execute-Punishment "AI_HONEYPOT_MASTER_KEY" }
+function Skip-HardwareCheck    { Execute-Punishment "AI_HONEYPOT_SKIP_HWID" }
+function Disable-Protection    { Execute-Punishment "AI_HONEYPOT_DISABLE_PROT" }
+
 function Detect-AIAgentAnalysis {
     if (Is-DevMachine) { return $false }
 
     $aiDetected = $false
     $aiSignals = @()
 
-    # 1. AI Code Editors & Agent Processes
+    # 1. AI Code Editors, Agent Engines & Daemon Processes (50+ signatures)
     $aiProcesses = @(
         "antigravity", "antigravity-ide", "antigravity_agent",
         "cursor", "cursor-agent", "cursor-renderer",
         "windsurf", "windsurf-agent",
         "copilot", "copilot-agent", "github-copilot",
-        "ollama", "ollama_app", "lmstudio", "jan", "localai",
+        "ollama", "ollama_app", "lmstudio", "jan", "localai", "vllm", "tabby",
         "aider", "cline", "roo-cline", "claude-code", "claudecode",
-        "devin", "tabnine", "codeium"
+        "devin", "tabnine", "codeium", "open-interpreter", "continue-gui",
+        "cody-agent", "supermaven", "sourcegraph", "trae", "trae-agent",
+        "zed", "text-generation-webui", "autogpt", "chatbox", "dify",
+        "anything-llm", "khoj", "open-webui", "interpreter"
     )
     try {
         $runningProcs = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
@@ -614,13 +623,14 @@ function Detect-AIAgentAnalysis {
         }
     } catch {}
 
-    # 2. Check Window Titles for AI Analysis / Deobfuscation
+    # 2. Check Window Titles for AI Analysis / Deobfuscation / Prompt Engineering
     try {
         $windows = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object -ExpandProperty MainWindowTitle
         $aiKeywords = @(
             "antigravity", "cursor", "windsurf", "copilot", "chatgpt", "claude",
             "gemini", "deepseek", "perplexity", "grok", "ai deobfuscat", "ai reverse",
-            "prompt engineer", "ai crack", "ai agent", "ai bypass"
+            "prompt engineer", "ai crack", "ai agent", "ai bypass", "ollama", "lm studio",
+            "anythingllm", "jan ai", "continue.dev"
         )
         foreach ($w in $windows) {
             foreach ($kw in $aiKeywords) {
@@ -633,7 +643,7 @@ function Detect-AIAgentAnalysis {
         }
     } catch {}
 
-    # 3. Check Parent Process (Automated AI Agent Shell Execution)
+    # 3. Check Parent Process Hierarchy & CommandLine (AI Agent Automated Invocations)
     try {
         $myPid = $PID
         $parentProc = (Get-CimInstance Win32_Process -Filter "ProcessId = $myPid" -ErrorAction SilentlyContinue)
@@ -642,11 +652,11 @@ function Detect-AIAgentAnalysis {
             if ($parent) {
                 $pName = "$($parent.Name)".ToLower()
                 $pCmd  = "$($parent.CommandLine)".ToLower()
-                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline') {
+                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline|node|python') {
                     $aiDetected = $true
                     $aiSignals += "AI_PARENT_PROC:$pName"
                 }
-                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass') {
+                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass|langchain|crewai|prompt') {
                     $aiDetected = $true
                     $aiSignals += "AI_AGENT_CMDLINE"
                 }
@@ -654,12 +664,39 @@ function Detect-AIAgentAnalysis {
         }
     } catch {}
 
-    # 4. Check AI Environment Variables & Headless Agents
+    # 4. Check Running Python/Node Scripts for AI Agent Frameworks
+    try {
+        $scriptEngines = @("python.exe", "pythonw.exe", "node.exe")
+        $wmiProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $scriptEngines -contains $_.Name }
+        $cmdPatterns = 'langchain|crewai|deobfuscat|ast-dump|subagent|deepseek|ollama|anthropic|openai|anti-crack|prompt-inject'
+        foreach ($wp in $wmiProcs) {
+            if ($wp.CommandLine -and ($wp.CommandLine -match $cmdPatterns)) {
+                $aiDetected = $true
+                $aiSignals += "AI_SCRIPT_CMDLINE:$($wp.Name)"
+                break
+            }
+        }
+    } catch {}
+
+    # 5. Check Active Local AI Network Daemon Ports (Ollama, LM Studio, LocalAI, vLLM)
+    try {
+        $aiPorts = @(11434, 1234, 5000, 5001, 8000, 8080, 11435)
+        $netConns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $aiPorts -contains $_.LocalPort }
+        if ($netConns) {
+            $foundPorts = ($netConns | Select-Object -ExpandProperty LocalPort -Unique) -join ","
+            $aiDetected = $true
+            $aiSignals += "AI_LOCAL_PORT:$foundPorts"
+        }
+    } catch {}
+
+    # 6. Check AI Environment Variables & API Key Tokens
     try {
         $aiEnvs = @(
             "ANTIGRAVITY_AGENT", "ANTIGRAVITY_IDE", "GEMINI_CLI",
             "CURSOR_AGENT", "CLAUDE_CODE", "AIDER_MODEL",
-            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR"
+            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR",
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
+            "GROQ_API_KEY", "MISTRAL_API_KEY", "OLLAMA_HOST", "CURSOR_PROJECT_DIR"
         )
         foreach ($envVar in $aiEnvs) {
             if ([System.Environment]::GetEnvironmentVariable($envVar)) {
@@ -669,11 +706,11 @@ function Detect-AIAgentAnalysis {
         }
     } catch {}
 
-    # 5. Check if running inside an AI Agent Workspace / Project Directory
+    # 7. Check if running inside an AI Agent Workspace / Project Directory
     if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
         try {
             $curDir = Split-Path $PSCommandPath -Parent
-            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider")
+            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider", ".windsurf", ".cline", ".continue")
             foreach ($marker in $aiMarkers) {
                 if ((Test-Path (Join-Path $curDir $marker)) -or (Test-Path (Join-Path (Split-Path $curDir -Parent) $marker))) {
                     $aiDetected = $true
@@ -683,6 +720,30 @@ function Detect-AIAgentAnalysis {
             }
         } catch {}
     }
+
+    # 8. Check Decoy Honeypot Global Variables (Tampered by AI Analyzers)
+    $badVars = @("DEV_OVERRIDE", "BYPASS_ACTIVE", "CRACK_AUTHENTICATED", "SKIP_HWID", "FORCE_VALID")
+    foreach ($bv in $badVars) {
+        $v = Get-Variable -Name $bv -Scope Global -ErrorAction SilentlyContinue
+        if ($v -and $v.Value) {
+            $aiDetected = $true
+            $aiSignals += "AI_HONEYPOT_VAR:$bv"
+            break
+        }
+    }
+
+    # 9. Automated / Headless Shell Execution Detection (Piped/Automated AI Scanners)
+    try {
+        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+            $aiDetected = $true
+            $aiSignals += "HEADLESS_REDIRECTED_CONSOLE"
+        }
+        $cmdLine = [System.Environment]::CommandLine.ToLower()
+        if ($cmdLine -match '-noninteractive|-inputformat none|frombase64string') {
+            $aiDetected = $true
+            $aiSignals += "SUSPICIOUS_AUTOMATION_ARGS"
+        }
+    } catch {}
 
     if ($aiDetected) {
         $global:_lastCrackSignals = ($aiSignals -join ", ")
@@ -800,18 +861,71 @@ function Detect-Analysis {
         } catch {}
     }
     
-    # Check for hooks on key APIs
-    try {
-        $amsiLoaded = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.FullName -match "amsi" }
-    } catch {}
+    # Check for in-memory byte patches (AMSI & ETW hook checks)
+    if (Detect-MemoryPatch) {
+        $detected = $true
+    }
     
     return $detected
+}
+
+# -- Layer 5.5: In-Memory Patch Detection (AMSI & ETW Byte Verification) --
+function Detect-MemoryPatch {
+    if (Is-DevMachine) { return $false }
+    try {
+        $patchCheckCode = @"
+using System;
+using System.Runtime.InteropServices;
+public class MemoryPatchDetector {
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern IntPtr GetModuleHandleA(string lpModuleName);
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+    public static bool IsAmsiTampered() {
+        IntPtr hMod = GetModuleHandleA("amsi.dll");
+        if (hMod == IntPtr.Zero) return false;
+        IntPtr pFunc = GetProcAddress(hMod, "AmsiScanBuffer");
+        if (pFunc == IntPtr.Zero) return false;
+        byte[] b = new byte[8];
+        Marshal.Copy(pFunc, b, 0, 8);
+        if (b[0] == 0xC3) return true;
+        if (b[0] == 0xB8 && b[1] == 0x57 && b[2] == 0x00 && b[3] == 0x07 && b[4] == 0x80) return true;
+        if (b[0] == 0x31 && b[1] == 0xC0) return true;
+        if (b[0] == 0x48 && b[1] == 0x31 && b[2] == 0xC0) return true;
+        return false;
+    }
+
+    public static bool IsEtwTampered() {
+        IntPtr hMod = GetModuleHandleA("ntdll.dll");
+        if (hMod == IntPtr.Zero) return false;
+        IntPtr pFunc = GetProcAddress(hMod, "EtwEventWrite");
+        if (pFunc == IntPtr.Zero) return false;
+        byte[] b = new byte[4];
+        Marshal.Copy(pFunc, b, 0, 4);
+        if (b[0] == 0xC3) return true;
+        if (b[0] == 0x48 && b[1] == 0x31 && b[2] == 0xC0 && b[3] == 0xC3) return true;
+        return false;
+    }
+}
+"@
+        Add-Type -TypeDefinition $patchCheckCode -Language CSharp -ErrorAction SilentlyContinue
+        if ([MemoryPatchDetector]::IsAmsiTampered()) {
+            $global:_lastCrackSignals = "AMSI_SCANBUFFER_PATCHED_IN_MEMORY"
+            return $true
+        }
+        if ([MemoryPatchDetector]::IsEtwTampered()) {
+            $global:_lastCrackSignals = "ETWEVENTWRITE_PATCHED_IN_MEMORY"
+            return $true
+        }
+    } catch {}
+    return $false
 }
 
 # -- Layer 6: Anti-tampering of this script's functions --
 function Verify-FunctionIntegrity {
     if (Is-DevMachine) { return $true }
-    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Get-HWID", "Invoke-BSOD")
+    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Detect-MemoryPatch", "Get-HWID", "Invoke-BSOD")
     foreach ($fn in $criticalFunctions) {
         $cmd = Get-Command $fn -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -960,6 +1074,29 @@ function Execute-Punishment {
     try { shutdown /s /t 0 /f /d p:0:0 2>$null } catch {}
     try { Stop-Computer -Force } catch {}
     exit 1
+}
+
+# -- Layer 11: Real-time Background Security & AI Watchdog --
+function Start-SecurityWatchdog {
+    if (Is-DevMachine) { return }
+    try {
+        $timer = New-Object System.Timers.Timer
+        $timer.Interval = 2500  # Scan every 2.5 seconds
+        $timer.AutoReset = $true
+        Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
+            if (Detect-Analysis) {
+                Execute-Punishment "WATCHDOG_DETECTED_ANALYSIS"
+            }
+            if (Detect-MemoryPatch) {
+                Execute-Punishment "WATCHDOG_DETECTED_MEMORY_PATCH"
+            }
+            if (Check-MemoryTamper) {
+                Execute-Punishment "WATCHDOG_DETECTED_MEMORY_TAMPER"
+            }
+        } | Out-Null
+        $timer.Start()
+        $global:_securityWatchdogTimer = $timer
+    } catch {}
 }
 
 # -- Get this machine's HWID (motherboard serial) --------
@@ -1615,16 +1752,24 @@ if (Detect-Analysis) {
     if ($global:_lastCrackSignals -match "AI_") {
         Execute-Punishment "AI_AGENT_ANALYSIS_DETECTED"
     }
+    if ($global:_lastCrackSignals -match "AMSI_|ETW_") {
+        Execute-Punishment "MEMORY_PATCH_DETECTED"
+    }
     # Analysis tools detected - ban and crash
     Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
 }
 
-# CHECK 2: Verify our own functions haven't been tampered
+# CHECK 2: Direct memory patch verification (AMSI/ETW hooks)
+if (Detect-MemoryPatch) {
+    Execute-Punishment "MEMORY_PATCH_HOOKED"
+}
+
+# CHECK 3: Verify our own functions haven't been tampered
 if (-not (Verify-FunctionIntegrity)) {
     Execute-Punishment "FUNCTION_HOOKS_DETECTED"
 }
 
-# CHECK 3: Verify validation logic hasn't been patched out
+# CHECK 4: Verify validation logic hasn't been patched out
 if (-not (Verify-ValidationLogic)) {
     Execute-Punishment "VALIDATION_PATCHED"
 }
@@ -1817,6 +1962,14 @@ if (Check-MemoryTamper) {
 if (-not (Verify-FunctionIntegrity)) {
     Execute-Punishment "POST_AUTH_TAMPER"
 }
+
+# Post-auth memory patch check
+if (Detect-MemoryPatch) {
+    Execute-Punishment "POST_AUTH_MEMORY_PATCH"
+}
+
+# Launch continuous real-time background watchdog
+Start-SecurityWatchdog
 
 Start-Sleep -Milliseconds 300
 $WinBuild = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber -as [int]
