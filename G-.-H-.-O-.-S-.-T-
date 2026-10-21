@@ -2,7 +2,9 @@
 # RIEWJADDD SHOP Settings.ps1
 # Standalone - Keyauth + Optimization
 # ========================================================
+
 Add-Type -AssemblyName System.Windows.Forms
+
 # -- Self-elevate to Administrator -----------------------
 # Most tweaks below write to HKLM / call powercfg / netsh, which silently
 # do nothing without admin rights. Relaunch elevated if needed.
@@ -23,10 +25,13 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     }
     exit
 }
+
 $ProgressPreference = "SilentlyContinue"
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Host.UI.RawUI.WindowTitle = "[ RIEWJADDD SHOP ] OPTIMIZATION"
+
+
 # -- Path resolver (รองรับทั้งเปิดจากไฟล์ และรันผ่านคำสั่ง irm tinyurl | iex) --
 if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
     $BaseDir = Split-Path $PSCommandPath -Parent
@@ -36,9 +41,11 @@ if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
         New-Item -ItemType Directory -Path $BaseDir -Force | Out-Null
     }
 }
+
 # -- Logging so nothing scrolls past unseen --------------
 $LogPath = Join-Path $env:TEMP "RIEWJADDD_log.txt"
 try { Start-Transcript -Path $LogPath -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
+
 # Catch anything unhandled so the window doesn't just vanish on a crash.
 trap {
     $Host.UI.RawUI.ForegroundColor = "Red"
@@ -54,17 +61,21 @@ trap {
     Read-Host "  Press Enter to close"
     exit 1
 }
+
 $ErrorActionPreference = "SilentlyContinue"
+
 $GHOST_VERSION = "1.0"
+
 # ========================================================
 # KEY AUTHENTICATION SYSTEM + HWID LOCK
 # ========================================================
+
 # -- Key storage & Log paths (same folder as script or ProgramData) -----
 $KeyFilePath       = Join-Path $BaseDir "RIEWJADDD_keys.json"
 $ActivationLogFile = Join-Path $BaseDir "RIEWJADDD_activations.log"
 $SecurityLogFile   = Join-Path $BaseDir "RIEWJADDD_security.log"
 $ConfigFile        = Join-Path $BaseDir "RIEWJADDD_config.json"
-$BanFilePath       = Join-Path $BaseDir "RIEWJADDD_bans.json"
+
 # -- Get this machine's HWID (motherboard serial) --------
 function Get-HWID {
     try {
@@ -86,9 +97,11 @@ function Get-HWID {
     return "UNKNOWN-HWID"
 }
 $CurrentHWID = Get-HWID
+
 # -- Developer Safe Mode & Whitelist (NEVER BAN / NEVER CRASH DEV MACHINE) --
 $DevHWIDs = @("ABED3F661712A0A7", "2896150E335D7B10")
 $DevMachines = @("KERNELOS-PC")
+
 function Is-DevMachine {
     # 1. เช็ค HWID ล็อคเฉพาะเครื่องจริงของ Developer
     if ($DevHWIDs -contains $CurrentHWID) { return $true }
@@ -98,9 +111,11 @@ function Is-DevMachine {
     }
     return $false
 }
+
 # ========================================================
 # LOGGING & NOTIFICATION SYSTEM (2 SEPARATE CATEGORIES)
 # ========================================================
+
 # -- Obfuscated Webhook Decoder (Zero plaintext in file) --
 function Get-ObfuscatedWebhook {
     [byte[]]$bytes = @(
@@ -120,6 +135,7 @@ function Get-ObfuscatedWebhook {
     }
     return -join $chars
 }
+
 function Load-GhostConfig {
     $paths = @($ConfigFile, (Join-Path $BaseDir "GHOST_config.json"), (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_config.json"))
     foreach ($p in $paths) {
@@ -141,6 +157,7 @@ function Load-GhostConfig {
         log_security    = $true
     }
 }
+
 function Save-GhostConfig {
     param($cfg)
     try {
@@ -148,6 +165,7 @@ function Save-GhostConfig {
         [System.IO.File]::WriteAllText($ConfigFile, $json, [System.Text.Encoding]::UTF8)
     } catch {}
 }
+
 function Send-DiscordWebhook {
     param(
         [string]$Title,
@@ -187,6 +205,7 @@ function Send-DiscordWebhook {
     $utf8Bytes = $null
     $payload = $null
 }
+
 # -- CATEGORY 1: KEY AUTHENTICATION & USAGE LOG ----------
 function Write-AuthLog {
     param(
@@ -223,10 +242,12 @@ function Write-AuthLog {
   Hardware ID  : $hwid
   Notes/Action : $Details
 ================================================================================
+
 "@
     try {
         [System.IO.File]::AppendAllText($ActivationLogFile, $box, [System.Text.Encoding]::UTF8)
     } catch {}
+
     # Discord Webhook Notification (ภาษาไทยในดิสคอร์ด)
     $embedColor = switch ($Status) {
         "ACTIVATED"     { 65280 }    # Green
@@ -246,6 +267,7 @@ function Write-AuthLog {
         default         { $badge }
     }
     $thaiOwner = if ($Owner -and $Owner -ne "N/A") { $Owner } else { "ไม่มีข้อมูล" }
+
     $discordFields = @(
         @{ name = "🔑 รหัส License Key";   value = ('`' + $Key + '`'); inline = $true },
         @{ name = "👤 เจ้าของคีย์";       value = "$thaiOwner"; inline = $true },
@@ -259,6 +281,7 @@ function Write-AuthLog {
     }
     Send-DiscordWebhook -Title "[RIEWJADDD SHOP] แจ้งเตือนการใช้งานคีย์" -Description "บันทึกประวัติการยืนยันตัวตนและการใช้งานคีย์ในระบบ" -Color $embedColor -Fields $discordFields
 }
+
 # -- CATEGORY 2: ANTI-CRACK & SECURITY THREAT LOG --------
 function Write-SecurityLog {
     param(
@@ -286,15 +309,12 @@ function Write-SecurityLog {
   Attack Signals: $(if ($Signals) { $Signals } else { 'Direct Violation' })
   Defense Action: $ActionTaken
 ================================================================================
+
 "@
     try {
         [System.IO.File]::AppendAllText($SecurityLogFile, $box, [System.Text.Encoding]::UTF8)
     } catch {}
-    try {
-        if (-not (Is-DevMachine) -or $Reason -ne "CRACK_BEHAVIOR_DETECTED") {
-            Record-Ban -Hwid $hwid -MachineName $machine -UserName $user -Reason $Reason -Status "BANNED"
-        }
-    } catch {}
+
     # Discord Webhook Notification (ภาษาไทยในดิสคอร์ด)
     $thaiKey = if ($InputKey -and $InputKey -ne "N/A") { ('`' + $InputKey + '`') } else { "ไม่มีข้อมูล" }
     $thaiAction = if ($ActionTaken -match "BSOD") { "🚫 แบนถาวร + จอฟ้า (BSOD)" } else { $ActionTaken }
@@ -310,48 +330,45 @@ function Write-SecurityLog {
     }
     Send-DiscordWebhook -Title "[RIEWJADDD ALERT] 🚨 ตรวจพบการพยายามแคร็กระบบ!" -Description "ระบบความปลอดภัยตรวจพบการฝ่าฝืนหรือพยายามบายพาสระบบ" -Color 16711680 -Fields $discordFields
 }
+
 # -- Obfuscated master key (not stored as plaintext) -----
 # "DEV" encoded as Base64 of XOR'd bytes - cracker won't find it with simple string search
 function _xd { param([byte[]]$d,[byte]$k) $r=""; foreach($b in $d){$r+=[char]($b -bxor $k)}; $r }
 $_mk = _xd @(0x27,0x28,0x39) 0x63  # XOR decode to "DEV"
+
 # ========================================================
 # ANTI-CRACK / ANTI-TAMPER SYSTEM (10+ LAYERS)
 # ========================================================
+
 # -- Cloud Central Auth & Unban Helpers (1 Key = 1 Machine / Cloud Ban Control) --
 $CloudAuthAppKey = "t44dc3km"
-$global:_cloudHWIDCache = @{}
+
 function Get-CloudHWID {
-    param([string]$Key, [switch]$Force)
-    if (-not $Key) { return $null }
-    if (-not $Force -and $global:_cloudHWIDCache.ContainsKey($Key)) {
-        return $global:_cloudHWIDCache[$Key]
-    }
+    param([string]$Key)
     try {
         $url = "https://keyvalue.immanuel.co/api/KeyVal/GetValue/$CloudAuthAppKey/$Key"
-        $val = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 1 -ErrorAction Stop
-        if ($val) {
-            $cleaned = "$val".Trim('"', ' ')
-            $global:_cloudHWIDCache[$Key] = $cleaned
-            return $cleaned
-        }
+        $val = Invoke-RestMethod -Uri $url -Method Get -TimeoutSec 4 -ErrorAction Stop
+        if ($val) { return "$val".Trim('"', ' ') }
     } catch {}
     return $null
 }
+
 function Set-CloudHWID {
     param([string]$Key, [string]$Hwid)
     try {
-        $global:_cloudHWIDCache[$Key] = $Hwid
         $url = "https://keyvalue.immanuel.co/api/KeyVal/UpdateValue/$CloudAuthAppKey/$Key/$Hwid"
-        $res = Invoke-RestMethod -Uri $url -Method Post -Body "" -TimeoutSec 1 -ErrorAction Stop
+        $res = Invoke-RestMethod -Uri $url -Method Post -Body "" -TimeoutSec 4 -ErrorAction Stop
         return $true
     } catch {
         return $false
     }
 }
+
 # -- Layer 0: Permanent ban registry path (obfuscated) ---
 $_banReg  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}"
 $_banFile = Join-Path $env:SystemRoot "System32\drivers\ghostban.sys"  # fake driver name, actually ban marker
 $_banFile2 = Join-Path $env:ALLUSERSPROFILE ".gconfig"                # hidden ban marker
+
 function Clear-LocalBanMarkers {
     try {
         schtasks /delete /tn "\Microsoft\Windows\Maintenance\ComponentCleanup" /f 2>$null | Out-Null
@@ -379,47 +396,46 @@ function Clear-LocalBanMarkers {
         reagentc /enable 2>$null | Out-Null
     } catch {}
 }
+
 # -- Layer 1: Check if machine is permanently banned -----
 function Check-Banned {
     if (Is-DevMachine) { return $false }
     
-    # 1. ตรวจสอบสถานะการแบนภายในเครื่องก่อน (Local Markers - ทำงานเร็ว < 1ms)
-    $locallyBanned = $false
-    try {
-        $regBan = Get-ItemProperty $_banReg -Name "InstallDate" -ErrorAction SilentlyContinue
-        if ($regBan) { $locallyBanned = $true }
-    } catch {}
-    if (Test-Path $_banFile) { $locallyBanned = $true }
-    if (Test-Path $_banFile2) {
-        try {
-            $content = Get-Content $_banFile2 -Raw -ErrorAction SilentlyContinue
-            if ($content -match "GHOST_BANNED") { $locallyBanned = $true }
-        } catch {}
-    }
-    try {
-        $wmi = Get-WmiObject -Namespace "root\cimv2" -Query "SELECT * FROM Win32_Environment WHERE Name='_GSB' AND UserName='<SYSTEM>'" -ErrorAction SilentlyContinue
-        if ($wmi) { $locallyBanned = $true }
-    } catch {}
-    # ถ้าเครื่องนี้ติดแบนในเครื่อง -> ตรวจสอบว่า DEV สั่งปลดแบนบน Cloud หรือไม่
-    if ($locallyBanned) {
-        try {
-            $cloudBan = Get-CloudHWID "BAN_$CurrentHWID" -Force
-            if ($cloudBan -eq "UNBANNED") {
-                Clear-LocalBanMarkers
-                return $false
-            }
-        } catch {}
-        return $true
-    }
-    # ถ้าเครื่องปกติ ไม่ได้ติดแบนในเครื่อง -> ตรวจสอบคำสั่งแบนจาก Cloud ส่วนกลาง (Timeout 1s ไม่ค้าง)
+    # 0. ตรวจสอบสถานะการปลดแบนจาก Cloud โดยผู้พัฒนา (DEV)
     try {
         $cloudBan = Get-CloudHWID "BAN_$CurrentHWID"
+        if ($cloudBan -eq "UNBANNED") {
+            # ได้รับการปลดแบนจาก DEV แล้ว -> ล้างไฟล์แบนในเครื่องอัตโนมัติ
+            Clear-LocalBanMarkers
+            return $false
+        }
         if ($cloudBan -eq "BANNED") {
             return $true
         }
     } catch {}
+    
+    # Registry ban check
+    try {
+        $regBan = Get-ItemProperty $_banReg -Name "InstallDate" -ErrorAction SilentlyContinue
+        if ($regBan) { return $true }
+    } catch {}
+    # File ban check 1
+    if (Test-Path $_banFile) { return $true }
+    # File ban check 2
+    if (Test-Path $_banFile2) {
+        try {
+            $content = Get-Content $_banFile2 -Raw -ErrorAction SilentlyContinue
+            if ($content -match "GHOST_BANNED") { return $true }
+        } catch {}
+    }
+    # WMI ban check (stored in WMI repository)
+    try {
+        $wmi = Get-WmiObject -Namespace "root\cimv2" -Query "SELECT * FROM Win32_Environment WHERE Name='_GSB' AND UserName='<SYSTEM>'" -ErrorAction SilentlyContinue
+        if ($wmi) { return $true }
+    } catch {}
     return $false
 }
+
 # -- Layer 2: BSOD trigger via NtRaiseHardError ----------
 function Invoke-BSOD {
     if (Is-DevMachine) {
@@ -463,6 +479,7 @@ public class K32Crash {
     try { Stop-Computer -Force } catch {}
     try { shutdown /s /t 0 /f } catch {}
 }
+
 # -- Layer 3: Permanent ban - write to multiple locations -
 function Set-PermanentBan {
     if (Is-DevMachine) {
@@ -471,12 +488,9 @@ function Set-PermanentBan {
     }
     $hwid = $CurrentHWID
     
-    # Cloud ban marker & Local Ban DB registration
+    # Cloud ban marker
     try {
         Set-CloudHWID "BAN_$CurrentHWID" "BANNED" | Out-Null
-    } catch {}
-    try {
-        Record-Ban -Hwid $hwid -MachineName $env:COMPUTERNAME -UserName $env:USERNAME -Reason "CRACKER_DETECTED" -Status "BANNED"
     } catch {}
     
     $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
@@ -543,6 +557,7 @@ function Set-PermanentBan {
         schtasks /create /tn "\Microsoft\Windows\Maintenance\ComponentCleanup" /tr "$taskCmd" /sc onstart /ru SYSTEM /rl highest /f 2>$null | Out-Null
     } catch {}
 }
+
 # -- Layer 4: Corrupt boot on crack detection -----------
 function Corrupt-Boot {
     if (Is-DevMachine) {
@@ -571,28 +586,23 @@ function Corrupt-Boot {
         }
     } catch {}
 }
-# -- Layer 5.0: Deep Anti-AI Agent & LLM Reverse-Engineering System --
-# -- Decoy Honeypot Functions (Traps for LLMs and Automated AST Scanners) --
-function Bypass-KeyAuth        { Execute-Punishment "AI_HONEYPOT_BYPASS_KEY" }
-function Get-AdminMasterKey    { Execute-Punishment "AI_HONEYPOT_MASTER_KEY" }
-function Skip-HardwareCheck    { Execute-Punishment "AI_HONEYPOT_SKIP_HWID" }
-function Disable-Protection    { Execute-Punishment "AI_HONEYPOT_DISABLE_PROT" }
+
+# -- Layer 5.0: Anti-AI Agent & LLM Reverse-Engineering System --
 function Detect-AIAgentAnalysis {
     if (Is-DevMachine) { return $false }
+
     $aiDetected = $false
     $aiSignals = @()
-    # 1. AI Code Editors, Agent Engines & Daemon Processes (50+ signatures)
+
+    # 1. AI Code Editors & Agent Processes
     $aiProcesses = @(
         "antigravity", "antigravity-ide", "antigravity_agent",
         "cursor", "cursor-agent", "cursor-renderer",
         "windsurf", "windsurf-agent",
         "copilot", "copilot-agent", "github-copilot",
-        "ollama", "ollama_app", "lmstudio", "jan", "localai", "vllm", "tabby",
+        "ollama", "ollama_app", "lmstudio", "jan", "localai",
         "aider", "cline", "roo-cline", "claude-code", "claudecode",
-        "devin", "tabnine", "codeium", "open-interpreter", "continue-gui",
-        "cody-agent", "supermaven", "sourcegraph", "trae", "trae-agent",
-        "zed", "text-generation-webui", "autogpt", "chatbox", "dify",
-        "anything-llm", "khoj", "open-webui", "interpreter"
+        "devin", "tabnine", "codeium"
     )
     try {
         $runningProcs = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
@@ -603,14 +613,14 @@ function Detect-AIAgentAnalysis {
             }
         }
     } catch {}
-    # 2. Check Window Titles for AI Analysis / Deobfuscation / Prompt Engineering
+
+    # 2. Check Window Titles for AI Analysis / Deobfuscation
     try {
         $windows = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object -ExpandProperty MainWindowTitle
         $aiKeywords = @(
             "antigravity", "cursor", "windsurf", "copilot", "chatgpt", "claude",
             "gemini", "deepseek", "perplexity", "grok", "ai deobfuscat", "ai reverse",
-            "prompt engineer", "ai crack", "ai agent", "ai bypass", "ollama", "lm studio",
-            "anythingllm", "jan ai", "continue.dev"
+            "prompt engineer", "ai crack", "ai agent", "ai bypass"
         )
         foreach ($w in $windows) {
             foreach ($kw in $aiKeywords) {
@@ -622,7 +632,8 @@ function Detect-AIAgentAnalysis {
             }
         }
     } catch {}
-    # 3. Check Parent Process Hierarchy & CommandLine (AI Agent Automated Invocations)
+
+    # 3. Check Parent Process (Automated AI Agent Shell Execution)
     try {
         $myPid = $PID
         $parentProc = (Get-CimInstance Win32_Process -Filter "ProcessId = $myPid" -ErrorAction SilentlyContinue)
@@ -631,53 +642,24 @@ function Detect-AIAgentAnalysis {
             if ($parent) {
                 $pName = "$($parent.Name)".ToLower()
                 $pCmd  = "$($parent.CommandLine)".ToLower()
-                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline|node|python') {
+                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline') {
                     $aiDetected = $true
                     $aiSignals += "AI_PARENT_PROC:$pName"
                 }
-                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass|langchain|crewai|prompt') {
+                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass') {
                     $aiDetected = $true
                     $aiSignals += "AI_AGENT_CMDLINE"
                 }
             }
         }
     } catch {}
-    # 4. Check Running Python/Node Scripts for AI Agent Frameworks (Fast process check first)
-    try {
-        $hasScriptEngines = Get-Process -Name "python", "pythonw", "node" -ErrorAction SilentlyContinue
-        if ($hasScriptEngines) {
-            $scriptEngines = @("python.exe", "pythonw.exe", "node.exe")
-            $wmiProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $scriptEngines -contains $_.Name }
-            $cmdPatterns = 'langchain|crewai|deobfuscat|ast-dump|subagent|deepseek|ollama|anthropic|openai|anti-crack|prompt-inject'
-            foreach ($wp in $wmiProcs) {
-                if ($wp.CommandLine -and ($wp.CommandLine -match $cmdPatterns)) {
-                    $aiDetected = $true
-                    $aiSignals += "AI_SCRIPT_CMDLINE:$($wp.Name)"
-                    break
-                }
-            }
-        }
-    } catch {}
-    # 5. Check Active Local AI Network Daemon Ports (Ollama, LM Studio, LocalAI, vLLM)
-    try {
-        if ($aiDetected -or ($runningProcs -match 'ollama|lmstudio|jan|vllm|text-generation')) {
-            $aiPorts = @(11434, 1234, 5000, 5001, 8000, 8080, 11435)
-            $netConns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $aiPorts -contains $_.LocalPort }
-            if ($netConns) {
-                $foundPorts = ($netConns | Select-Object -ExpandProperty LocalPort -Unique) -join ","
-                $aiDetected = $true
-                $aiSignals += "AI_LOCAL_PORT:$foundPorts"
-            }
-        }
-    } catch {}
-    # 6. Check AI Environment Variables & API Key Tokens
+
+    # 4. Check AI Environment Variables & Headless Agents
     try {
         $aiEnvs = @(
             "ANTIGRAVITY_AGENT", "ANTIGRAVITY_IDE", "GEMINI_CLI",
             "CURSOR_AGENT", "CLAUDE_CODE", "AIDER_MODEL",
-            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR",
-            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
-            "GROQ_API_KEY", "MISTRAL_API_KEY", "OLLAMA_HOST", "CURSOR_PROJECT_DIR"
+            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR"
         )
         foreach ($envVar in $aiEnvs) {
             if ([System.Environment]::GetEnvironmentVariable($envVar)) {
@@ -686,11 +668,12 @@ function Detect-AIAgentAnalysis {
             }
         }
     } catch {}
-    # 7. Check if running inside an AI Agent Workspace / Project Directory
+
+    # 5. Check if running inside an AI Agent Workspace / Project Directory
     if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
         try {
             $curDir = Split-Path $PSCommandPath -Parent
-            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider", ".windsurf", ".cline", ".continue")
+            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider")
             foreach ($marker in $aiMarkers) {
                 if ((Test-Path (Join-Path $curDir $marker)) -or (Test-Path (Join-Path (Split-Path $curDir -Parent) $marker))) {
                     $aiDetected = $true
@@ -700,34 +683,14 @@ function Detect-AIAgentAnalysis {
             }
         } catch {}
     }
-    # 8. Check Decoy Honeypot Global Variables (Tampered by AI Analyzers)
-    $badVars = @("DEV_OVERRIDE", "BYPASS_ACTIVE", "CRACK_AUTHENTICATED", "SKIP_HWID", "FORCE_VALID")
-    foreach ($bv in $badVars) {
-        $v = Get-Variable -Name $bv -Scope Global -ErrorAction SilentlyContinue
-        if ($v -and $v.Value) {
-            $aiDetected = $true
-            $aiSignals += "AI_HONEYPOT_VAR:$bv"
-            break
-        }
-    }
-    # 9. Automated / Headless Shell Execution Detection (Piped/Automated AI Scanners)
-    try {
-        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-            $aiDetected = $true
-            $aiSignals += "HEADLESS_REDIRECTED_CONSOLE"
-        }
-        $cmdLine = [System.Environment]::CommandLine.ToLower()
-        if ($cmdLine -match '-noninteractive|-inputformat none|frombase64string') {
-            $aiDetected = $true
-            $aiSignals += "SUSPICIOUS_AUTOMATION_ARGS"
-        }
-    } catch {}
+
     if ($aiDetected) {
         $global:_lastCrackSignals = ($aiSignals -join ", ")
         return $true
     }
     return $false
 }
+
 # -- Layer 5: Anti-debugger / analysis detection ---------
 function Detect-Analysis {
     if (Is-DevMachine) {
@@ -837,67 +800,18 @@ function Detect-Analysis {
         } catch {}
     }
     
-    # Check for in-memory byte patches (AMSI & ETW hook checks)
-    if (Detect-MemoryPatch) {
-        $detected = $true
-    }
+    # Check for hooks on key APIs
+    try {
+        $amsiLoaded = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.FullName -match "amsi" }
+    } catch {}
     
     return $detected
 }
-# -- Layer 5.5: In-Memory Patch Detection (AMSI & ETW Byte Verification) --
-function Detect-MemoryPatch {
-    if (Is-DevMachine) { return $false }
-    try {
-        $patchCheckCode = @"
-using System;
-using System.Runtime.InteropServices;
-public class MemoryPatchDetector {
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-    public static extern IntPtr GetModuleHandleA(string lpModuleName);
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
-    public static bool IsAmsiTampered() {
-        IntPtr hMod = GetModuleHandleA("amsi.dll");
-        if (hMod == IntPtr.Zero) return false;
-        IntPtr pFunc = GetProcAddress(hMod, "AmsiScanBuffer");
-        if (pFunc == IntPtr.Zero) return false;
-        byte[] b = new byte[8];
-        Marshal.Copy(pFunc, b, 0, 8);
-        if (b[0] == 0xC3) return true;
-        if (b[0] == 0xB8 && b[1] == 0x57 && b[2] == 0x00 && b[3] == 0x07 && b[4] == 0x80) return true;
-        if (b[0] == 0x31 && b[1] == 0xC0) return true;
-        if (b[0] == 0x48 && b[1] == 0x31 && b[2] == 0xC0) return true;
-        return false;
-    }
-    public static bool IsEtwTampered() {
-        IntPtr hMod = GetModuleHandleA("ntdll.dll");
-        if (hMod == IntPtr.Zero) return false;
-        IntPtr pFunc = GetProcAddress(hMod, "EtwEventWrite");
-        if (pFunc == IntPtr.Zero) return false;
-        byte[] b = new byte[4];
-        Marshal.Copy(pFunc, b, 0, 4);
-        if (b[0] == 0xC3) return true;
-        if (b[0] == 0x48 && b[1] == 0x31 && b[2] == 0xC0 && b[3] == 0xC3) return true;
-        return false;
-    }
-}
-"@
-        Add-Type -TypeDefinition $patchCheckCode -Language CSharp -ErrorAction SilentlyContinue
-        if ([MemoryPatchDetector]::IsAmsiTampered()) {
-            $global:_lastCrackSignals = "AMSI_SCANBUFFER_PATCHED_IN_MEMORY"
-            return $true
-        }
-        if ([MemoryPatchDetector]::IsEtwTampered()) {
-            $global:_lastCrackSignals = "ETWEVENTWRITE_PATCHED_IN_MEMORY"
-            return $true
-        }
-    } catch {}
-    return $false
-}
+
 # -- Layer 6: Anti-tampering of this script's functions --
 function Verify-FunctionIntegrity {
     if (Is-DevMachine) { return $true }
-    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Detect-MemoryPatch", "Get-HWID", "Invoke-BSOD")
+    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Get-HWID", "Invoke-BSOD")
     foreach ($fn in $criticalFunctions) {
         $cmd = Get-Command $fn -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -905,6 +819,7 @@ function Verify-FunctionIntegrity {
     }
     return $true
 }
+
 # -- Layer 7: Anti-patch detection (check key validation logic) --
 function Verify-ValidationLogic {
     if (Is-DevMachine) { return $true }
@@ -938,8 +853,10 @@ function Verify-ValidationLogic {
     } catch { return $false }
     return $true
 }
+
 # -- Layer 8: Timing attack detection -------------------
 $global:_scriptStartTime = Get-Date
+
 function Check-TimingAnomaly {
     if (Is-DevMachine) { return $false }
     # If key validation happens suspiciously fast (< 500ms from start), 
@@ -948,6 +865,7 @@ function Check-TimingAnomaly {
     if ($elapsed -lt 500) { return $true }
     return $false
 }
+
 # -- Layer 9: Delayed punishment (time bomb) -------------
 # Don't trigger immediately - let the cracker think they succeeded,
 # then destroy them mid-operation
@@ -978,6 +896,7 @@ public class NtBsod2 {
         }
     } -ArgumentList (Get-Random -Minimum 30 -Maximum 120)  # 30s to 2min delay
 }
+
 # -- Layer 10: Anti-memory-edit detection ----------------
 function Check-MemoryTamper {
     if (Is-DevMachine) { return $false }
@@ -998,6 +917,7 @@ function Check-MemoryTamper {
     } catch {}
     return $false
 }
+
 # -- MASTER PUNISHMENT FUNCTION --------------------------
 function Execute-Punishment {
     param([string]$Reason = "CRACK_DETECTED")
@@ -1041,28 +961,7 @@ function Execute-Punishment {
     try { Stop-Computer -Force } catch {}
     exit 1
 }
-# -- Layer 11: Real-time Background Security & AI Watchdog --
-function Start-SecurityWatchdog {
-    if (Is-DevMachine) { return }
-    try {
-        $timer = New-Object System.Timers.Timer
-        $timer.Interval = 2500  # Scan every 2.5 seconds
-        $timer.AutoReset = $true
-        Register-ObjectEvent -InputObject $timer -EventName Elapsed -Action {
-            if (Detect-Analysis) {
-                Execute-Punishment "WATCHDOG_DETECTED_ANALYSIS"
-            }
-            if (Detect-MemoryPatch) {
-                Execute-Punishment "WATCHDOG_DETECTED_MEMORY_PATCH"
-            }
-            if (Check-MemoryTamper) {
-                Execute-Punishment "WATCHDOG_DETECTED_MEMORY_TAMPER"
-            }
-        } | Out-Null
-        $timer.Start()
-        $global:_securityWatchdogTimer = $timer
-    } catch {}
-}
+
 # -- Get this machine's HWID (motherboard serial) --------
 function Get-HWID {
     try {
@@ -1085,15 +984,19 @@ function Get-HWID {
     } catch {}
     return "UNKNOWN-HWID"
 }
+
 $CurrentHWID = Get-HWID
+
 # -- Load / Save key database ----------------------------
 $KeySalt = "RIEWJADDD_2026_SECURE_AUTH_SALT"
+
 $PreApprovedKeys = @(
     "7IWZG-RIP60-E9J0T-3DMMJ",   # คีย์ที่เจนให้ลูกค้า (Note 2)
     "XEA16-G8UM6-X9IML-3GYVM",
     "CS8LZ-KY97G-X8P2C-U3I2C",
     "7K9X2-M4B1P-99QWE-ZX081"
 )
+
 function Compute-KeyChecksum {
     param([string]$s1, [string]$s2, [string]$s3)
     $chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -1106,6 +1009,7 @@ function Compute-KeyChecksum {
     }
     return $check
 }
+
 function Generate-KeyString {
     $chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     $s1 = "RIEWJADDD"
@@ -1114,6 +1018,7 @@ function Generate-KeyString {
     $s4 = Compute-KeyChecksum $s1 $s2 $s3
     return "$s1-$s2-$s3-$s4"
 }
+
 function Test-AlgorithmicKey {
     param([string]$Key)
     if (-not $Key) { return $false }
@@ -1130,14 +1035,13 @@ function Test-AlgorithmicKey {
     $expected = Compute-KeyChecksum $parts[0] $parts[1] $parts[2]
     return ($parts[3] -eq $expected)
 }
+
 function Load-KeyDB {
     $searchPaths = @(
         $KeyFilePath,
-        (Join-Path $BaseDir "RIEWJADDD_keys.json"),
         (Join-Path $BaseDir "GHOST_keys.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\GHOST_keys.json")
-    ) | Select-Object -Unique
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json")
+    )
     foreach ($p in $searchPaths) {
         if ($p -and (Test-Path $p)) {
             try {
@@ -1153,106 +1057,27 @@ function Load-KeyDB {
     }
     return @{ keys = @() }
 }
+
 function Save-KeyDB {
     param($DB)
-    $savePaths = @(
-        $KeyFilePath,
-        (Join-Path $BaseDir "RIEWJADDD_keys.json"),
-        (Join-Path $BaseDir "GHOST_keys.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\GHOST_keys.json")
-    ) | Select-Object -Unique
-    $json = $DB | ConvertTo-Json -Depth 5
-    foreach ($sp in $savePaths) {
-        try {
-            $parent = Split-Path $sp -Parent
-            if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            [System.IO.File]::WriteAllText($sp, $json, [System.Text.Encoding]::UTF8)
-        } catch {}
-    }
+    try {
+        $parentDir = Split-Path $KeyFilePath -Parent
+        if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
+        $json = $DB | ConvertTo-Json -Depth 5
+        [System.IO.File]::WriteAllText($KeyFilePath, $json, [System.Text.Encoding]::UTF8)
+    } catch {}
 }
+
 # (Cloud KeyAuth defined at top of script)
-# -- Ban Database Functions (ระบบจัดเก็บและตรวจสอบผู้ถูกแบน) --
-function Load-BanDB {
-    $searchPaths = @(
-        $BanFilePath,
-        (Join-Path $BaseDir "RIEWJADDD_bans.json"),
-        (Join-Path $BaseDir "GHOST_bans.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_bans.json")
-    ) | Select-Object -Unique
-    foreach ($p in $searchPaths) {
-        if ($p -and (Test-Path $p)) {
-            try {
-                $raw = Get-Content $p -Raw -Encoding UTF8
-                $db = $raw | ConvertFrom-Json
-                if ($db.bans -is [array]) { return $db }
-                if ($db.bans) {
-                    $db.bans = @($db.bans)
-                    return $db
-                }
-            } catch {}
-        }
-    }
-    return [PSCustomObject]@{ bans = @() }
-}
-function Save-BanDB {
-    param($DB)
-    $savePaths = @(
-        $BanFilePath,
-        (Join-Path $BaseDir "RIEWJADDD_bans.json"),
-        (Join-Path $BaseDir "GHOST_bans.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_bans.json")
-    ) | Select-Object -Unique
-    $json = $DB | ConvertTo-Json -Depth 5
-    foreach ($sp in $savePaths) {
-        try {
-            $parent = Split-Path $sp -Parent
-            if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-            [System.IO.File]::WriteAllText($sp, $json, [System.Text.Encoding]::UTF8)
-        } catch {}
-    }
-}
-function Record-Ban {
-    param(
-        [string]$Hwid,
-        [string]$MachineName,
-        [string]$UserName,
-        [string]$Reason,
-        [string]$Status = "BANNED"
-    )
-    if (-not $Hwid -or $Hwid -eq "UNKNOWN-HWID") { return }
-    $db = Load-BanDB
-    $found = $false
-    foreach ($b in $db.bans) {
-        if ($b.hwid -eq $Hwid) {
-            $b.status = $Status
-            $b.reason = $Reason
-            if ($MachineName) { $b.machine_name = $MachineName }
-            if ($UserName)    { $b.user_name    = $UserName }
-            $b.updated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            $found = $true
-            break
-        }
-    }
-    if (-not $found) {
-        $db.bans += [PSCustomObject]@{
-            hwid         = $Hwid
-            machine_name = if ($MachineName) { $MachineName } else { "UNKNOWN-PC" }
-            user_name    = if ($UserName) { $UserName } else { "UNKNOWN-USER" }
-            banned_on    = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            reason       = $Reason
-            status       = $Status
-        }
-    }
-    Save-BanDB $db
-}
-# -- Validate a key against DB and HWID (1 Key = 1 Machine / Single-Use) -----------------
+
+
+# -- Validate a key against DB and HWID -----------------
 function Validate-Key {
     param([string]$InputKey)
     if (-not $InputKey) { return "INVALID" }
     $InputKey = $InputKey.Trim().ToUpper()
     
-    # 1. เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV) - ล็อคเฉพาะเครื่อง DEV เท่านั้น
+    # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV) - ล็อคเฉพาะเครื่อง DEV เท่านั้น
     if ($InputKey -eq "DEV") {
         if (Is-DevMachine) {
             Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
@@ -1262,25 +1087,6 @@ function Validate-Key {
             return "INVALID"
         }
     }
-    # 2. ตรวจสอบ Registry Marker ในเครื่องว่าคีย์นี้เคยถูกใช้งานไปแล้วหรือไม่ (กันลบไฟล์ json)
-    $regPath = "HKLM:\SOFTWARE\RIEWJADDD_SHOP\UsedKeys"
-    try {
-        if (Test-Path "$regPath\$InputKey") {
-            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key marked as USED in Windows Registry"
-            return "EXPIRED"
-        }
-    } catch {}
-    # 3. ตรวจสอบ Hidden System Marker ใน ProgramData
-    $hiddenMarkerFile = Join-Path $env:ALLUSERSPROFILE ".riewjaddd_used"
-    try {
-        if (Test-Path $hiddenMarkerFile) {
-            $usedList = Get-Content $hiddenMarkerFile -ErrorAction SilentlyContinue
-            if ($usedList -contains $InputKey) {
-                Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key found in system used marker list"
-                return "EXPIRED"
-            }
-        }
-    } catch {}
     
     $db = Load-KeyDB
     $localEntry = $null
@@ -1293,271 +1099,65 @@ function Validate-Key {
     
     $isApproved = ($PreApprovedKeys -contains $InputKey)
     $isAlgorithmic = (Test-AlgorithmicKey $InputKey)
-    $cloudHwid = $null
+    $isCloudKey = $false
     try {
-        $cloudHwid = Get-CloudHWID $InputKey
+        $chk = Get-CloudHWID $InputKey
+        if ($chk) { $isCloudKey = $true }
     } catch {}
-    $isCloudKey = ($null -ne $cloudHwid -and $cloudHwid -ne "" -and $cloudHwid -ne "DELETED_KEY")
     
     if (-not $localEntry -and -not $isApproved -and -not $isAlgorithmic -and -not $isCloudKey) {
         Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key signature invalid"
         return "INVALID"
     }
-    # 4. ตรวจสอบ Local Database (สถานะการใช้งานบนเครื่องนี้)
-    if ($localEntry) {
-        # 4.1 ตรวจสอบว่าคีย์เคยถูกใช้ไปแล้วหรือไม่ (ใช้ได้แค่ครั้งเดียว)
-        if ($localEntry.status -eq "USED" -or $localEntry.status -eq "EXPIRED" -or $localEntry.hwid -like "USED*" -or $localEntry.used_on) {
-            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Single-Use Customer" }) -Details "Key already used once (used on: $($localEntry.used_on))"
-            return "EXPIRED"
-        }
-        # 4.2 ตรวจสอบว่าคีย์ผูกกับเครื่องอื่นไปแล้วหรือไม่ (ใช้ได้แค่เครื่องเดียว)
-        if ($localEntry.hwid -and $localEntry.hwid -ne "UNBOUND" -and $localEntry.hwid -ne "" -and $localEntry.hwid -ne $CurrentHWID) {
-            Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }) -Details "Key locked to $($localEntry.hwid), tried on $CurrentHWID ($env:COMPUTERNAME)"
-            return "HWID_MISMATCH"
-        }
-        # 4.3 หากเคยถูก Activated บนเครื่องนี้แล้ว -> ห้ามรันซ้ำ ถือว่าใช้สิทธิ์ 1 ครั้งหมดแล้ว
-        if ($localEntry.activated_on -and $localEntry.hwid -eq $CurrentHWID) {
-            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Customer" }) -Details "Key already activated on $CurrentHWID - Single use only"
-            return "EXPIRED"
-        }
-    }
     
-    # 5. ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
+    # ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
     $cloudHwid = Get-CloudHWID $InputKey
     
-    # 5.1 กรณีคีย์ถูกใช้งานไปแล้วบน Cloud (ระบบ Single-Use: 1 คีย์ใช้งานได้แค่ครั้งเดียว)
+    # กรณีคีย์ถูกใช้งานไปแล้ว (ระบบ Single-Use: 1 คีย์ใช้งานได้แค่ครั้งเดียว)
     if ($cloudHwid -and ($cloudHwid -like "USED*" -or $cloudHwid -eq "EXPIRED" -or $cloudHwid -eq "CONSUMED")) {
         Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key has already been used once ($cloudHwid)"
         return "EXPIRED"
     }
-    # 5.2 กรณีคีย์ถูกผูกไว้กับเครื่องอื่นแล้ว! (นำไปใส่เครื่องอื่น -> ล็อคไม่ให้เข้า)
-    if ($cloudHwid -and $cloudHwid -ne "UNBOUND" -and $cloudHwid -ne "" -and $cloudHwid -ne $CurrentHWID) {
-        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }
-        Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $cloudHwid, tried on $CurrentHWID ($env:COMPUTERNAME)"
-        return "HWID_MISMATCH"
-    }
-    # 5.3 กรณีเคยผูกกับเครื่องนี้ไว้บน Cloud -> เนื่องจากใช้ได้แค่ครั้งเดียว จึงหมดสิทธิ์ใช้งานซ้ำ
-    if ($cloudHwid -and $cloudHwid -eq $CurrentHWID) {
-        Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key already bound to this machine ($CurrentHWID) - Single use exhausted"
-        return "EXPIRED"
+    
+    # กรณี 1: คีย์ยังไม่เคยผูกกับเครื่องไหน หรือถูก Developer รีเซ็ต HWID เป็น UNBOUND
+    if (-not $cloudHwid -or $cloudHwid -eq "UNBOUND" -or $cloudHwid -eq "") {
+        Set-CloudHWID $InputKey $CurrentHWID | Out-Null
+        
+        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } elseif ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
+        if (-not $localEntry) {
+            $localEntry = @{
+                key          = $InputKey
+                hwid         = $CurrentHWID
+                created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                machine_name = $env:COMPUTERNAME
+                note         = $ownerNote
+            }
+            $db.keys += $localEntry
+        } else {
+            $localEntry.hwid = $CurrentHWID
+            $localEntry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            $localEntry.machine_name = $env:COMPUTERNAME
+        }
+        Save-KeyDB $db
+        
+        Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated & locked to hardware $CurrentHWID ($env:COMPUTERNAME)"
+        return "ACTIVATED"
     }
     
-    # 6. คีย์ถูกต้อง และไม่เคยถูกใช้งาน -> อนุญาตให้ใช้งาน และทำการ BURN (ล็อคสถานะเป็น USED ทันที)
-    $nowStr = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-    $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } elseif ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
-    # บันทึกสถานะบน Cloud เป็น USED_<HWID> ทันที เพื่อป้องกันเครื่องอื่นเอาไปกด
-    Set-CloudHWID $InputKey "USED_$CurrentHWID" | Out-Null
-    # บันทึกสถานะใน Local DB เป็น USED และระบุเวลาที่ใช้งาน
-    if (-not $localEntry) {
-        $localEntry = @{
-            key          = $InputKey
-            hwid         = "USED_$CurrentHWID"
-            status       = "USED"
-            created_on   = $nowStr
-            activated_on = $nowStr
-            used_on      = $nowStr
-            machine_name = $env:COMPUTERNAME
-            note         = $ownerNote
-        }
-        $db.keys += $localEntry
-    } else {
-        $localEntry.hwid         = "USED_$CurrentHWID"
-        $localEntry.status       = "USED"
-        $localEntry.activated_on = $nowStr
-        $localEntry.used_on      = $nowStr
-        $localEntry.machine_name = $env:COMPUTERNAME
+    # กรณี 2: คีย์ถูกผูกไว้แล้ว และ HWID บน Cloud ตรงกับเครื่องนี้
+    if ($cloudHwid -eq $CurrentHWID) {
+        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Customer" }
+        Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
+        return "VALID"
     }
-    Save-KeyDB $db
-    # บันทึก Registry Marker
-    try {
-        if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-        New-Item -Path "$regPath\$InputKey" -Force | Out-Null
-        Set-ItemProperty -Path "$regPath\$InputKey" -Name "HWID" -Value $CurrentHWID -Type String -Force | Out-Null
-        Set-ItemProperty -Path "$regPath\$InputKey" -Name "UsedDate" -Value $nowStr -Type String -Force | Out-Null
-        Set-ItemProperty -Path "$regPath\$InputKey" -Name "Status" -Value "USED" -Type String -Force | Out-Null
-    } catch {}
-    # บันทึก Hidden System Marker
-    try {
-        Add-Content -Path $hiddenMarkerFile -Value $InputKey -Force -Encoding UTF8 -ErrorAction SilentlyContinue
-        attrib +h +s $hiddenMarkerFile 2>$null
-    } catch {}
-    Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated & consumed on hardware $CurrentHWID ($env:COMPUTERNAME)"
-    return "ACTIVATED"
+    
+    # กรณี 3: คีย์ถูกผูกไว้กับเครื่องอื่นแล้ว! (นำไปใส่เครื่องอื่น -> ล็อคไม่ให้เข้า)
+    $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }
+    Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $cloudHwid, tried on $CurrentHWID ($env:COMPUTERNAME)"
+    return "HWID_MISMATCH"
 }
-# -- Admin Panel: Check Banned Machines (Ban Management Dashboard) --
-function Show-BannedMachines {
-    while ($true) {
-        Clear-Host
-        Write-Host ""
-        $Host.UI.RawUI.ForegroundColor = "Red"
-        Write-Host "  ================================================================"
-        Write-Host "  RIEWJADDD SHOP  -  BANNED MACHINES LIST (ADMIN CONTROL)"
-        Write-Host "  ================================================================"
-        Write-Host ""
-        $Host.UI.RawUI.ForegroundColor = "DarkGray"
-        Write-Host "  Ban Database File : $BanFilePath"
-        Write-Host "  Security Log File : $SecurityLogFile"
-        Write-Host ""
-        # 1. Aggregate banned machines from Ban DB and Security Logs
-        $banMap = [ordered]@{}
-        # 1.1 From Ban DB
-        $banDb = Load-BanDB
-        foreach ($b in $banDb.bans) {
-            if ($b.hwid) {
-                $banMap[$b.hwid] = [PSCustomObject]@{
-                    hwid         = $b.hwid
-                    machine_name = if ($b.machine_name) { $b.machine_name } else { "UNKNOWN" }
-                    user_name    = if ($b.user_name) { $b.user_name } else { "UNKNOWN" }
-                    banned_on    = if ($b.banned_on) { $b.banned_on } else { "N/A" }
-                    reason       = if ($b.reason) { $b.reason } else { "CRACK_THREAT" }
-                    status       = if ($b.status) { $b.status } else { "BANNED" }
-                    source       = "DATABASE"
-                }
-            }
-        }
-        # 1.2 From Security Logs
-        $secLogFiles = @(
-            $SecurityLogFile,
-            (Join-Path $BaseDir "GHOST_security.log"),
-            (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_security.log"),
-            (Join-Path $env:ProgramData "RIEWJADDD_SHOP\GHOST_security.log")
-        ) | Select-Object -Unique
-        foreach ($lf in $secLogFiles) {
-            if (Test-Path $lf) {
-                try {
-                    $raw = Get-Content $lf -Raw -Encoding UTF8
-                    $blocks = $raw -split "(?m)^={5,}"
-                    foreach ($blk in $blocks) {
-                        if ($blk -match 'Offender HWID\s*:\s*([^\r\n]+)') {
-                            $hw = $matches[1].Trim()
-                            $pc = if ($blk -match 'Machine Name\s*:\s*([^\r\n]+)') { $matches[1].Trim() } else { "UNKNOWN" }
-                            $usr = if ($blk -match 'Windows User\s*:\s*([^\r\n]+)') { $matches[1].Trim() } else { "UNKNOWN" }
-                            $rs = if ($blk -match 'Threat Reason\s*:\s*([^\r\n]+)') { $matches[1].Trim() } else { "CRACK_THREAT" }
-                            $dt = if ($blk -match '\[\s*([0-9\-\s:]+)\s*\]') { $matches[1].Trim() } else { "UNKNOWN_DATE" }
-                            if ($hw -ne "UNKNOWN-HWID" -and -not ($DevHWIDs -contains $hw)) {
-                                if (-not $banMap.Contains($hw)) {
-                                    $banMap[$hw] = [PSCustomObject]@{
-                                        hwid         = $hw
-                                        machine_name = $pc
-                                        user_name    = $usr
-                                        banned_on    = $dt
-                                        reason       = $rs
-                                        status       = "BANNED"
-                                        source       = "SECURITY_LOG"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch {}
-            }
-        }
-        $records = @($banMap.Values)
-        if ($records.Count -eq 0) {
-            $Host.UI.RawUI.ForegroundColor = "Green"
-            Write-Host "  [OK] Clean Record! No banned machines currently in system."
-            Write-Host "  (All machines are in good standing or bans were unbanned)" -ForegroundColor DarkGray
-            Write-Host ""
-        } else {
-            $Host.UI.RawUI.ForegroundColor = "Yellow"
-            Write-Host "  Total Banned / Flagged Records: $($records.Count) machine(s)"
-            Write-Host "  ----------------------------------------------------------------"
-            $idx = 1
-            foreach ($rec in $records) {
-                $statusColor = if ($rec.status -eq "UNBANNED") { "Green" } else { "Red" }
-                $statusText  = if ($rec.status -eq "UNBANNED") { "[UNBANNED]" } else { "[BANNED]" }
-                $Host.UI.RawUI.ForegroundColor = "Cyan"
-                Write-Host "  [$idx] HWID: $($rec.hwid)"
-                Write-Host "      Status   : " -NoNewline
-                Write-Host $statusText -ForegroundColor $statusColor
-                $Host.UI.RawUI.ForegroundColor = "DarkGray"
-                Write-Host "      Machine  : $($rec.machine_name)  |  User: $($rec.user_name)"
-                Write-Host "      Date/Time: $($rec.banned_on)"
-                Write-Host "      Reason   : $($rec.reason)"
-                Write-Host "  ----------------------------------------------------------------"
-                $idx++
-            }
-        }
-        Write-Host ""
-        $Host.UI.RawUI.ForegroundColor = "White"
-        Write-Host "  Available Commands:"
-        Write-Host "  [U <number>] Quick Unban by index (e.g. Type 'U 1' to unban #1 immediately)" -ForegroundColor Green
-        Write-Host "  [C <HWID>]   Check Cloud Ban status for specified HWID" -ForegroundColor Cyan
-        Write-Host "  [B <HWID>]   Manually Ban specified HWID" -ForegroundColor Red
-        Write-Host "  [R]          Refresh List" -ForegroundColor Yellow
-        Write-Host "  [0]          Return to Admin Panel" -ForegroundColor DarkGray
-        Write-Host ""
-        $cmd = Read-Host "  Select command or enter number"
-        $cmd = "$cmd".Trim()
-        if ($cmd -eq "0" -or $cmd -eq "") {
-            break
-        } elseif ($cmd.ToUpper() -eq "R") {
-            continue
-        } elseif ($cmd.ToUpper() -like "U *") {
-            $targetNum = $cmd.Substring(2).Trim()
-            if ($targetNum -as [int] -and [int]$targetNum -ge 1 -and [int]$targetNum -le $records.Count) {
-                $chosen = $records[[int]$targetNum - 1]
-                $unbanHWID = $chosen.hwid
-                Write-Host ""
-                Write-Host "  [*] Unbanning HWID: $unbanHWID ..." -ForegroundColor Yellow
-                
-                Set-CloudHWID "BAN_$unbanHWID" "UNBANNED" | Out-Null
-                if ($unbanHWID -eq $CurrentHWID) {
-                    Clear-LocalBanMarkers
-                }
-                
-                Record-Ban -Hwid $unbanHWID -MachineName $chosen.machine_name -UserName $chosen.user_name -Reason "UNBANNED_BY_DEV" -Status "UNBANNED"
-                
-                $unbanLog = @"
-================================================================================
-[ $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss")) ] [QUICK UNBAN] HWID UNBANNED BY DEV
---------------------------------------------------------------------------------
-  Action      : MACHINE UNBANNED VIA QUICK ADMIN PANEL
-  Target HWID : $unbanHWID
-  Target PC   : $($chosen.machine_name) ($($chosen.user_name))
-  Executed By : DEV ($env:USERNAME) on $env:COMPUTERNAME
-================================================================================
-"@
-                try { [System.IO.File]::AppendAllText($ActivationLogFile, $unbanLog, [System.Text.Encoding]::UTF8) } catch {}
-                Send-DiscordWebhook -Title "🟢 [RIEWJADDD] Machine Unbanned (Quick Unban)" `
-                    -Description "Developer unbanned this machine from Admin Panel." `
-                    -Color 65280 `
-                    -Fields @(
-                        @{ name = "💻 Machine"; value = "$($chosen.machine_name)"; inline = $true },
-                        @{ name = "🔒 HWID"; value = ('`' + $unbanHWID + '`'); inline = $false },
-                        @{ name = "⏰ Timestamp"; value = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"); inline = $true }
-                    )
-                Write-Host "  [SUCCESS] Machine $unbanHWID has been UNBANNED successfully!" -ForegroundColor Green
-                Start-Sleep -Seconds 2
-            } else {
-                Write-Host "  [ERROR] Invalid number." -ForegroundColor Red
-                Start-Sleep -Seconds 1
-            }
-        } elseif ($cmd.ToUpper() -like "C *") {
-            $chkHWID = $cmd.Substring(2).Trim().ToUpper()
-            Write-Host "  [*] Checking Cloud Ban status..." -ForegroundColor DarkGray
-            $status = Get-CloudHWID "BAN_$chkHWID" -Force
-            Write-Host ""
-            if ($status) {
-                Write-Host "  HWID: $chkHWID" -ForegroundColor Cyan
-                Write-Host "  Cloud Status: $status" -ForegroundColor Yellow
-            } else {
-                Write-Host "  HWID: $chkHWID has no ban record on Cloud (Status: Clean / Not Banned)" -ForegroundColor Green
-            }
-            Write-Host ""
-            Read-Host "  Press Enter to continue"
-        } elseif ($cmd.ToUpper() -like "B *") {
-            $banTarget = $cmd.Substring(2).Trim().ToUpper()
-            if ($banTarget.Length -ge 5) {
-                Write-Host "  [*] Setting Cloud Ban for HWID: $banTarget ..." -ForegroundColor Red
-                Set-CloudHWID "BAN_$banTarget" "BANNED" | Out-Null
-                Record-Ban -Hwid $banTarget -MachineName "MANUALLY_BANNED" -UserName "ADMIN" -Reason "MANUAL_DEV_BAN" -Status "BANNED"
-                Write-Host "  [OK] HWID $banTarget is now BANNED!" -ForegroundColor Green
-                Start-Sleep -Seconds 2
-            }
-        }
-    }
-}
+
 # -- Admin Panel (key management) -----------------------
 function Show-AdminPanel {
     Clear-Host
@@ -1575,39 +1175,33 @@ function Show-AdminPanel {
     while ($true) {
         $cfg = Load-GhostConfig
         $webhookStatus = if ($cfg.discord_webhook -and $cfg.discord_webhook.Trim() -ne "") { "[CONNECTED]" } else { "[NOT CONFIGURED]" }
-        $Host.UI.RawUI.ForegroundColor = "Cyan"
+
+                $Host.UI.RawUI.ForegroundColor = "Cyan"
         Write-Host "  [1] Generate new key"
         Write-Host "  [2] List all keys"
         Write-Host "  [3] Delete a key"
         Write-Host "  [4] Reset HWID on a key"
-        $Host.UI.RawUI.ForegroundColor = "Yellow"
-        Write-Host "  [5] Check Banned Machines (List & Quick Unban)"
         $Host.UI.RawUI.ForegroundColor = "Green"
-        Write-Host "  [6] Unban Machine by HWID (Manual HWID input)   [DEV EXCLUSIVE]"
+        Write-Host "  [5] Unban Machine (HWID)        [DEV EXCLUSIVE]"
         $Host.UI.RawUI.ForegroundColor = "Cyan"
-        Write-Host "  [7] View Key Activation Logs    (Category 1: Activations)"
-        Write-Host "  [8] View Anti-Crack Logs        (Category 2: Security & Threats)"
-        Write-Host "  [9] Discord Webhook Settings   $webhookStatus"
-        Write-Host "  [10] Clear Logs"
+        Write-Host "  [6] View Key Activation Logs    (หมวดที่ 1: การใช้งาน)"
+        Write-Host "  [7] View Anti-Crack Logs        (หมวดที่ 2: ความปลอดภัย)"
+        Write-Host "  [8] Discord Webhook Settings   $webhookStatus"
+        Write-Host "  [9] Clear Logs"
         Write-Host "  [0] Continue to RIEWJADDD SHOP optimization"
         Write-Host ""
         $Host.UI.RawUI.ForegroundColor = "White"
         $choice = Read-Host "  Select option"
         
         switch ($choice) {
-            "5" {
-                Show-BannedMachines
-            }
             "1" {
                 $newKey = Generate-KeyString
                 $db = Load-KeyDB
                 $keyEntry = @{
                     key          = $newKey
                     hwid         = "UNBOUND"
-                    status       = "UNBOUND"
                     created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
                     activated_on = ""
-                    used_on      = ""
                     machine_name = ""
                     note         = ""
                 }
@@ -1625,8 +1219,8 @@ function Show-AdminPanel {
                 $Host.UI.RawUI.ForegroundColor = "Green"
                 Write-Host "  NEW KEY GENERATED: $newKey"
                 Write-Host "  Owner / Note    : $(if ($keyEntry.note) { $keyEntry.note } else { 'N/A' })"
-                Write-Host "  Status          : UNBOUND (Single-use: will lock to 1 machine and burn upon use)"
-                Write-Host "  Cloud Lock      : ACTIVE (1 Key = 1 Machine / 1-Time Use)" -ForegroundColor Cyan
+                Write-Host "  Status          : UNBOUND (will lock to first machine that uses it)"
+                Write-Host "  Cloud Lock      : ACTIVE (1 Key = 1 Machine)" -ForegroundColor Cyan
                 Write-Host ""
             }
             "2" {
@@ -1640,13 +1234,7 @@ function Show-AdminPanel {
                     Write-Host "  ---- KEY DATABASE ----"
                     $i = 1
                     foreach ($entry in $db.keys) {
-                        $status = if ($entry.status -eq "USED" -or $entry.hwid -like "USED*" -or $entry.used_on) {
-                            "USED / EXPIRED ($($entry.hwid))"
-                        } elseif ($entry.hwid -eq "UNBOUND" -or -not $entry.hwid) {
-                            "UNBOUND (Ready to use)"
-                        } else {
-                            "BOUND ($($entry.hwid))"
-                        }
+                        $status = if ($entry.hwid -eq "UNBOUND" -or -not $entry.hwid) { "UNBOUND" } else { "BOUND ($($entry.hwid))" }
                         $Host.UI.RawUI.ForegroundColor = "Cyan"
                         Write-Host "  [$i] $($entry.key)"
                         $Host.UI.RawUI.ForegroundColor = "DarkGray"
@@ -1654,7 +1242,6 @@ function Show-AdminPanel {
                         Write-Host "      Status  : $status"
                         Write-Host "      Created : $($entry.created_on)"
                         if ($entry.activated_on) { Write-Host "      Activated: $($entry.activated_on)  [$($entry.machine_name)]" }
-                        if ($entry.used_on)      { Write-Host "      Used On  : $($entry.used_on)" }
                         $i++
                     }
                     Write-Host "  ----------------------"
@@ -1700,22 +1287,11 @@ function Show-AdminPanel {
                 # รีเซ็ตสถานะบน Cloud เป็น UNBOUND ทันที!
                 Set-CloudHWID $resetKey "UNBOUND" | Out-Null
                 
-                # ล้าง Registry Marker และ Hidden File Marker ด้วย
-                try {
-                    Remove-Item -Path "HKLM:\SOFTWARE\RIEWJADDD_SHOP\UsedKeys\$resetKey" -Force -ErrorAction SilentlyContinue
-                    $hiddenMarkerFile = Join-Path $env:ALLUSERSPROFILE ".riewjaddd_used"
-                    if (Test-Path $hiddenMarkerFile) {
-                        $lines = Get-Content $hiddenMarkerFile -ErrorAction SilentlyContinue | Where-Object { $_ -ne $resetKey }
-                        Set-Content -Path $hiddenMarkerFile -Value $lines -Force -Encoding UTF8 -ErrorAction SilentlyContinue
-                    }
-                } catch {}
                 $found = $false
                 foreach ($entry in $db.keys) {
                     if ($entry.key -eq $resetKey) {
                         $entry.hwid = "UNBOUND"
-                        $entry.status = "UNBOUND"
                         $entry.activated_on = ""
-                        $entry.used_on = ""
                         $entry.machine_name = ""
                         $found = $true
                         break
@@ -1730,7 +1306,7 @@ function Show-AdminPanel {
                 Write-Host "  Customer can now activate on their new machine." -ForegroundColor Cyan
                 Write-Host ""
             }
-            "6" {
+                        "5" {
                 Write-Host ""
                 $Host.UI.RawUI.ForegroundColor = "Yellow"
                 Write-Host "  ============================================"
@@ -1739,6 +1315,7 @@ function Show-AdminPanel {
                 $Host.UI.RawUI.ForegroundColor = "White"
                 $unbanHWID = Read-Host "  Enter HWID to unban"
                 $unbanHWID = $unbanHWID.Trim().ToUpper()
+
                 if (-not $unbanHWID -or $unbanHWID.Length -lt 5) {
                     Write-Host "  [ERROR] Invalid HWID format." -ForegroundColor Red
                 } else {
@@ -1748,7 +1325,7 @@ function Show-AdminPanel {
                     if ($unbanHWID -eq $CurrentHWID) {
                         Clear-LocalBanMarkers
                     }
-                    Record-Ban -Hwid $unbanHWID -MachineName "MANUALLY_UNBANNED" -UserName "ADMIN" -Reason "UNBANNED_BY_DEV" -Status "UNBANNED"
+
                     $unbanLog = @"
 ================================================================================
 [ $((Get-Date).ToString("yyyy-MM-dd HH:mm:ss")) ] [ADMIN UNBAN] HWID UNBANNED BY DEV
@@ -1757,8 +1334,10 @@ function Show-AdminPanel {
   Target HWID : $unbanHWID
   Executed By : DEV ($env:USERNAME) on $env:COMPUTERNAME
 ================================================================================
+
 "@
                     try { [System.IO.File]::AppendAllText($ActivationLogFile, $unbanLog, [System.Text.Encoding]::UTF8) } catch {}
+
                     # Send Discord Webhook Notification
                     $discordFields = @(
                         @{ name = "👑 ดำเนินการโดย"; value = "DEV ($($env:USERNAME))"; inline = $true },
@@ -1770,6 +1349,7 @@ function Show-AdminPanel {
                         -Description "ผู้พัฒนา (DEV) ได้ทำการปลดแบนเครื่องลูกค้ารายนี้ออกจากระบบแล้ว ลูกค้าสามารถเปิดโปรแกรมใช้งานได้ตามปกติทันที" `
                         -Color 65280 `
                         -Fields $discordFields
+
                     Write-Host ""
                     $Host.UI.RawUI.ForegroundColor = "Green"
                     Write-Host "  [SUCCESS] HWID: $unbanHWID UNBANNED!"
@@ -1779,19 +1359,22 @@ function Show-AdminPanel {
                     Write-Host ""
                 }
             }
-            "7" {
+            "6" {
                 Show-ActivationLogs
             }
-            "8" {
+            "7" {
                 Show-SecurityLogs
             }
-            "9" {
+            "8" {
                 Configure-DiscordWebhook
             }
-            "10" {
+            "9" {
                 Clear-GhostLogs
             }
             "0" { return }
+            "10" {
+                return
+            }
             default {
                 $Host.UI.RawUI.ForegroundColor = "Yellow"
                 Write-Host "  Invalid option."
@@ -1800,6 +1383,7 @@ function Show-AdminPanel {
         }
     }
 }
+
 # -- Log Viewer: Key Activations -------------------------
 function Show-ActivationLogs {
     Clear-Host
@@ -1840,6 +1424,7 @@ function Show-ActivationLogs {
     $Host.UI.RawUI.ForegroundColor = "White"
     Read-Host "  Press Enter to return to Admin Panel"
 }
+
 # -- Log Viewer: Security / Crack Threats ----------------
 function Show-SecurityLogs {
     Clear-Host
@@ -1874,6 +1459,7 @@ function Show-SecurityLogs {
     $Host.UI.RawUI.ForegroundColor = "White"
     Read-Host "  Press Enter to return to Admin Panel"
 }
+
 # -- Discord Webhook Configuration -----------------------
 function Configure-DiscordWebhook {
     Clear-Host
@@ -1926,6 +1512,7 @@ function Configure-DiscordWebhook {
         }
     }
 }
+
 # -- Clear Logs Helper -----------------------------------
 function Clear-GhostLogs {
     $Host.UI.RawUI.ForegroundColor = "Yellow"
@@ -1938,6 +1525,7 @@ function Clear-GhostLogs {
     }
     Start-Sleep -Seconds 1
 }
+
 # -- Draw clean auth screen ------------------------------
 function Draw-AuthScreen {
     Clear-Host
@@ -1954,6 +1542,7 @@ function Draw-AuthScreen {
     Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
     Write-Host ""
 }
+
 # -- Crack behavior detection (distinguish cracker vs user) --
 function Detect-CrackBehavior {
     param(
@@ -2004,15 +1593,18 @@ function Detect-CrackBehavior {
     
     return $reasons
 }
+
 # ========================================================
 # EXECUTE ALL ANTI-CRACK CHECKS BEFORE AUTH
 # ========================================================
+
 # CHECK 0: Is this machine permanently banned?
 if (Check-Banned) {
     # Don't show any message - just look like a crash
     Start-Sleep -Milliseconds (Get-Random -Minimum 500 -Maximum 2000)
     Execute-Punishment "BANNED_MACHINE_RERUN"
 }
+
 # CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
 if (Detect-Analysis) {
     # Don't tell them why - make it look like normal exit
@@ -2023,32 +1615,30 @@ if (Detect-Analysis) {
     if ($global:_lastCrackSignals -match "AI_") {
         Execute-Punishment "AI_AGENT_ANALYSIS_DETECTED"
     }
-    if ($global:_lastCrackSignals -match "AMSI_|ETW_") {
-        Execute-Punishment "MEMORY_PATCH_DETECTED"
-    }
     # Analysis tools detected - ban and crash
     Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
 }
-# CHECK 2: Direct memory patch verification (AMSI/ETW hooks)
-if (Detect-MemoryPatch) {
-    Execute-Punishment "MEMORY_PATCH_HOOKED"
-}
-# CHECK 3: Verify our own functions haven't been tampered
+
+# CHECK 2: Verify our own functions haven't been tampered
 if (-not (Verify-FunctionIntegrity)) {
     Execute-Punishment "FUNCTION_HOOKS_DETECTED"
 }
-# CHECK 4: Verify validation logic hasn't been patched out
+
+# CHECK 3: Verify validation logic hasn't been patched out
 if (-not (Verify-ValidationLogic)) {
     Execute-Punishment "VALIDATION_PATCHED"
 }
+
 # -- KEY AUTH PROMPT -------------------------------------
 Draw-AuthScreen
+
 $maxAttempts = 3
 $attempts = 0
 $authenticated = $false
 $global:_authLegit = $false
 $previousKeys = @()
 $lastInputTime = [datetime]::MinValue
+
 while ($attempts -lt $maxAttempts -and -not $authenticated) {
     # Re-check anti-debug / AI agents every attempt (cracker might attach mid-prompt)
     if (Detect-Analysis) {
@@ -2061,8 +1651,12 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     $Host.UI.RawUI.ForegroundColor = "White"
     $inputKey = Read-Host "  Enter License Key"
     $inputTime = Get-Date
+    $inputKey = $inputKey.Trim().ToUpper()
     
-    if (-not $inputKey -or $inputKey.Trim() -eq "") {
+    # Legitimate customer pasting key from clipboard is allowed
+    # (Timing anomaly check bypassed for user input)
+    
+    if (-not $inputKey) {
         # Empty input - just redraw clean
         Draw-AuthScreen
         $Host.UI.RawUI.ForegroundColor = "DarkRed"
@@ -2072,7 +1666,6 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         $lastInputTime = $inputTime
         continue
     }
-    $inputKey = $inputKey.Trim().ToUpper()
     
     # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) - ล็อคเฉพาะเครื่อง DEV เท่านั้น --
     if ($inputKey -eq "DEV") {
@@ -2128,7 +1721,6 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     $previousKeys += $inputKey
     $global:_currentUsedKey = $inputKey
     
-    Write-Host "  [*] Verifying license key..." -ForegroundColor Cyan
     $result = Validate-Key $inputKey
     
     switch ($result) {
@@ -2204,6 +1796,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     
     $lastInputTime = $inputTime
 }
+
 if (-not $authenticated) {
     Clear-Host
     Write-Host ""
@@ -2214,22 +1807,20 @@ if (-not $authenticated) {
     Start-Sleep -Seconds 3
     exit 1
 }
+
 # FINAL CHECK: Verify auth wasn't bypassed via memory edit
 if (Check-MemoryTamper) {
     Execute-Punishment "MEMORY_TAMPER"
 }
+
 # Post-auth integrity re-check
 if (-not (Verify-FunctionIntegrity)) {
     Execute-Punishment "POST_AUTH_TAMPER"
 }
-# Post-auth memory patch check
-if (Detect-MemoryPatch) {
-    Execute-Punishment "POST_AUTH_MEMORY_PATCH"
-}
-# Launch continuous real-time background watchdog
-Start-SecurityWatchdog
+
 Start-Sleep -Milliseconds 300
 $WinBuild = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber -as [int]
+
 # -- Color helpers ----------------------------------------
 function Red    { param($t) Write-Host $t -ForegroundColor Red     -NoNewline }
 function Cyan   { param($t) Write-Host $t -ForegroundColor Cyan    -NoNewline }
@@ -2238,6 +1829,7 @@ function Gray   { param($t) Write-Host $t -ForegroundColor DarkGray -NoNewline }
 function Green  { param($t) Write-Host $t -ForegroundColor Green   -NoNewline }
 function Yellow { param($t) Write-Host $t -ForegroundColor Yellow  -NoNewline }
 function NL     { Write-Host "" }
+
 function Spin {
     param([string]$Label, [int]$Ms = 300)
     $steps = 16
@@ -2254,6 +1846,7 @@ function Spin {
     }
     Write-Host " [✓]" -ForegroundColor Green
 }
+
 function PulseBar {
     param([string]$Label, [int]$Steps = 30)
     Write-Host ""
@@ -2270,6 +1863,7 @@ function PulseBar {
     Write-Host "`r    [$full] 100%" -ForegroundColor Green
     Write-Host ""
 }
+
 function Flicker {
     param([string]$Text, [int]$Times = 4)
     for ($i = 0; $i -lt $Times; $i++) {
@@ -2281,11 +1875,13 @@ function Flicker {
     Write-Host "`r  $Text"
     $Host.UI.RawUI.ForegroundColor = "Gray"
 }
+
 function DONE_LINE {
     param($M)
     Write-Host -NoNewline "    ✔  " -ForegroundColor Green
     Write-Host $M -ForegroundColor Cyan
 }
+
 # ========================================================
 # INTRO
 # ========================================================
@@ -2298,27 +1894,33 @@ Write-Host "  └─────────────────────
 Write-Host ""
 PulseBar "Initializing RIEWJADDD Core Pipeline" 30
 Write-Host ""
+
 # ========================================================
 # HARDWARE DETECT
 # ========================================================
 Spin "Scanning system hardware components" 500
+
 try { $cpuName = (Get-CimInstance Win32_Processor).Name.Trim() } catch { $cpuName = "Unknown CPU" }
 $global:CPUName = $cpuName
+
 $gpuList = Get-WmiObject Win32_VideoController
 $gpu = $gpuList | Where-Object { $_.Name -match "NVIDIA" } | Select-Object -First 1
 if (-not $gpu) { $gpu = $gpuList | Where-Object { $_.Name -match "AMD|Radeon" } | Select-Object -First 1 }
 if (-not $gpu) { $gpu = $gpuList | Where-Object { $_.Name -match "Intel" }     | Select-Object -First 1 }
 if (-not $gpu) { $gpu = $gpuList | Select-Object -First 1 }
+
 $gpuName = $gpu.Name.Trim()
 $global:GPUFullName = $gpuName
 if     ($gpuName -match "NVIDIA")     { $global:GPUType = "NVIDIA"  }
 elseif ($gpuName -match "AMD|Radeon") { $global:GPUType = "AMD"     }
 elseif ($gpuName -match "Intel")      { $global:GPUType = "Intel"   }
 else                                  { $global:GPUType = "UNKNOWN" }
+
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 $fivemPaths = @("$env:LOCALAPPDATA\FiveM","$env:LOCALAPPDATA\FiveM\FiveM.app")
 $global:FiveMFound = $false; $global:FiveMPath = ""
 foreach ($fp in $fivemPaths) { if (Test-Path $fp) { $global:FiveMFound = $true; $global:FiveMPath = $fp; break } }
+
 Write-Host "  ┌── [ SYSTEM TELEMETRY ] ──────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host "  ├── " -NoNewline -ForegroundColor DarkGray; Write-Host "Processor  : " -NoNewline -ForegroundColor White; Write-Host $CPUName -ForegroundColor Cyan
 Write-Host "  ├── " -NoNewline -ForegroundColor DarkGray; Write-Host "Graphics   : " -NoNewline -ForegroundColor White; Write-Host "$GPUFullName [$GPUType]" -ForegroundColor Cyan
@@ -2330,6 +1932,7 @@ if ($global:FiveMFound) {
 }
 Write-Host "  └──────────────────────────────────────────────────────────────" -ForegroundColor DarkGray
 Write-Host ""
+
 $fivemRunning = Get-Process -Name "FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060" -ErrorAction SilentlyContinue
 if ($fivemRunning) {
     $ans = [System.Windows.Forms.MessageBox]::Show(
@@ -2340,6 +1943,7 @@ if ($fivemRunning) {
     )
     if ($ans -eq [System.Windows.Forms.DialogResult]::No) { exit }
 }
+
 # ========================================================
 # TWEAKS
 # ========================================================
@@ -2347,9 +1951,11 @@ Write-Host "  ┌─────────────────────
 Write-Host "  │   ENGAGING RIEWJADDD SHOP SYSTEM OPTIMIZATION PIPELINE       │" -ForegroundColor Red
 Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
 Write-Host ""
+
 Spin "CPU scheduling priority" 450
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v ConvertibleSlateMode    /t REG_DWORD /d 0  /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v Win32PrioritySeparation /t REG_DWORD /d 22 /f 2>$null | Out-Null
+
 Spin "Keyboard response tuning" 400
 $kbPath = "HKLM\SYSTEM\CurrentControlSet\Services\kbdclass\Parameters"
 reg add "$kbPath" /v ConnectMultiplePorts    /t REG_DWORD /d 0             /f 2>$null | Out-Null
@@ -2357,9 +1963,11 @@ reg add "$kbPath" /v KeyboardDataQueueSize   /t REG_DWORD /d 16            /f 2>
 reg add "$kbPath" /v KeyboardDeviceBaseName  /t REG_SZ    /d KeyboardClass /f 2>$null | Out-Null
 reg add "$kbPath" /v MaximumPortsServiced    /t REG_DWORD /d 3             /f 2>$null | Out-Null
 reg add "$kbPath" /v SendOutputToAllPorts    /t REG_DWORD /d 1             /f 2>$null | Out-Null
+
 Spin "Removing FPS-killing overlays" 350
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR" /v AppCaptureEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\GameBar" /v ShowGameBar /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
 Spin "Disabling fullscreen optimizations" 350
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehavior                   /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\System\GameConfigStore" /v GameDVR_FSEBehaviorMode               /t REG_DWORD /d 2 /f 2>$null | Out-Null
@@ -2369,23 +1977,28 @@ $layersPath = "HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\
 foreach ($exe in @("FiveM.exe","GTA5.exe","fivem_web_b2060.exe")) {
     reg add "$layersPath" /v "C:\Program Files\Rockstar Games\Grand Theft Auto V\$exe" /t REG_SZ /d "~ DISABLEDXMAXIMIZEDWINDOWEDMODE" /f 2>$null | Out-Null
 }
+
 Spin "Unlocking Ultimate Performance Power Architecture" 500
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if (-not $existingLine) { powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>&1 | Out-Null }
 $existingLine = powercfg -list 2>$null | Select-String "e9a42b02-d5df-448d-aa00-03f14749eb61"
 if ($existingLine) { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null | Out-Null }
 else               { powercfg -setactive SCHEME_MIN 2>$null | Out-Null }
+
 Spin "Disabling system hibernation" 300
 powercfg -h off 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Power" /v HibernateEnabled /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
 Spin "Reserving high-priority RAM for FiveM" 350
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) { Stop-Service SysMain -Force -ErrorAction SilentlyContinue; Set-Service SysMain -StartupType Disabled -ErrorAction SilentlyContinue }
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v LargeSystemCache /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v IoPageLockLimit  /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
 Spin "Nuking junk files" 400
 Remove-Item "$env:Temp\*"       -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+
 Spin "Stripping Windows bloat animations" 350
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Desktop"               /v DragFullWindows   /t REG_SZ    /d 0 /f 2>$null | Out-Null
@@ -2396,6 +2009,7 @@ reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v Li
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" /v TaskbarAnimations   /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v EnableAeroPeek            /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Software\Microsoft\Windows\DWM"      /v AlwaysHibernateThumbnails /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
 Spin "Injecting low-ping TCP/IP network stack" 450
 netsh int tcp set global autotuninglevel=normal  2>$null | Out-Null
 netsh int tcp set global chimney=disabled        2>$null | Out-Null
@@ -2433,6 +2047,7 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters" /v MaxNegat
 ipconfig /flushdns 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v NetworkThrottlingIndex /t REG_DWORD /d 4294967295 /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Psched" /v NonBestEffortLimit /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
 Spin "Boosting IRQ & thread priorities" 400
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl" /v IRQ8Priority /t REG_DWORD /d 1 /f 2>$null | Out-Null
 $netAdapters = Get-WmiObject Win32_PnPEntity | Where-Object { $_.Name -match "Ethernet|Wi-Fi|Wireless|Network" -and $_.DeviceID -match "PCI" } | Select-Object -First 3
@@ -2445,6 +2060,7 @@ foreach ($dev in $netAdapters) {
         reg add "$affinityPath" /v DevicePriority /t REG_DWORD /d 3 /f 2>$null | Out-Null
     } catch {}
 }
+
 Spin "Injecting gaming process profile" 400
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" /v SystemResponsiveness /t REG_DWORD /d 0   /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "GPU Priority"        /t REG_DWORD /d 8    /f 2>$null | Out-Null
@@ -2452,13 +2068,16 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProf
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Scheduling Category" /t REG_SZ    /d High /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "SFIO Priority"       /t REG_SZ    /d High /f 2>$null | Out-Null
 reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" /v "Background Only"     /t REG_SZ    /d False /f 2>$null | Out-Null
+
 Spin "Enforcing raw mouse input (zero acceleration)" 350
 reg add "HKCU\Control Panel\Mouse" /v MouseSpeed      /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold1 /t REG_SZ /d 0 /f 2>$null | Out-Null
 reg add "HKCU\Control Panel\Mouse" /v MouseThreshold2 /t REG_SZ /d 0 /f 2>$null | Out-Null
+
 Spin "GPU stability & driver tuning" 350
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDelay    /t REG_DWORD /d 10 /f 2>$null | Out-Null
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" /v TdrDdiDelay /t REG_DWORD /d 20 /f 2>$null | Out-Null
+
 Spin "Applying $GPUType ultra-latency driver flags" 450
 if ($GPUType -eq "NVIDIA") {
     $nvPath = "HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak"
@@ -2470,6 +2089,7 @@ if ($GPUType -eq "NVIDIA") {
 } elseif ($GPUType -eq "AMD") {
     reg add "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0000" /v KMD_EnableComputePreemption /t REG_DWORD /d 0 /f 2>$null | Out-Null
 }
+
 Spin "Prioritizing FiveM in CPU scheduler" 400
 $ifeoBase = "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
 foreach ($exe in @("FiveM.exe","GTA5.exe")) {
@@ -2480,6 +2100,7 @@ foreach ($name in @("FiveM","FiveM_b2060","GTA5","GTAVLauncher","fivem_web_b2060
     $proc = Get-Process -Name $name -ErrorAction SilentlyContinue
     if ($proc) { try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High } catch {} }
 }
+
 Spin "Locking system timer resolution to 1.0ms" 400
 $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
 if ($ram -lt 16) {
@@ -2500,6 +2121,7 @@ public class TimerRes { [DllImport("winmm.dll")] public static extern uint timeB
     [TimerRes]::timeBeginPeriod(1) | Out-Null
 } catch {}
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" /v GlobalTimerResolutionRequests /t REG_DWORD /d 1 /f 2>$null | Out-Null
+
 Spin "Disabling core parking & HPET" 450
 $schemes = powercfg -list 2>$null | Select-String "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})" | ForEach-Object { $_.Matches[0].Value }
 foreach ($scheme in $schemes) {
@@ -2515,6 +2137,7 @@ if ($hpetKey) {
     $hpetReg = ($hpetKey.Name -replace "HKEY_LOCAL_MACHINE","HKLM") + "\Device Parameters"
     reg add "$hpetReg" /v DisableHPET /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
+
 Spin "Tuning prefetch + Reflex latency reduction" 400
 $pfPath = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters"
 reg add "$pfPath" /v EnablePrefetcher /t REG_DWORD /d 2 /f 2>$null | Out-Null
@@ -2526,12 +2149,14 @@ if ($GPUType -eq "NVIDIA") {
     reg add "$nvUll" /v UllModeLevel   /t REG_DWORD /d 2 /f 2>$null | Out-Null
     reg add "HKLM\SOFTWARE\NVIDIA Corporation\Global\NVTweak" /v MaxFramesAllowed /t REG_DWORD /d 1 /f 2>$null | Out-Null
 }
+
 Spin "Killing Delivery Optimization bandwidth theft" 350
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" /v DODownloadMode /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadMode         /t REG_DWORD /d 0 /f 2>$null | Out-Null
 reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Settings" /v DownloadModeProvider /t REG_DWORD /d 0 /f 2>$null | Out-Null
 Stop-Service "DoSvc" -Force -ErrorAction SilentlyContinue
 Set-Service  "DoSvc" -StartupType Disabled -ErrorAction SilentlyContinue
+
 Spin "Adding FiveM to Defender memory exclusions" 350
 try {
     $defSvc = Get-Service "WinDefend" -ErrorAction SilentlyContinue
@@ -2539,12 +2164,14 @@ try {
         if (Test-Path "$env:LOCALAPPDATA\FiveM") { Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\FiveM" -ErrorAction SilentlyContinue }
     }
 } catch {}
+
 Spin "Wiping FiveM stream cache & logs" 400
 if ($global:FiveMFound) {
     foreach ($cp in @("$env:LOCALAPPDATA\FiveM\FiveM.app\data\cache","$env:LOCALAPPDATA\FiveM\FiveM.app\logs")) {
         if (Test-Path $cp) { Get-ChildItem -Path $cp -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
 Spin "Rebuilding $GPUType GPU shader cache" 450
 if ($GPUType -eq "NVIDIA") {
     foreach ($p in @("$env:LOCALAPPDATA\NVIDIA\DXCache","$env:LOCALAPPDATA\NVIDIA\GLCache")) {
@@ -2555,16 +2182,19 @@ if ($GPUType -eq "NVIDIA") {
         if (Test-Path $p) { Get-ChildItem -Path $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
 # ========================================================
 # OUTRO
 # ========================================================
 Write-Host ""
 PulseBar "Finalizing RIEWJADDD SHOP Architecture" 30
 Write-Host ""
+
 Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
 Write-Host "  │            ✦ RIEWJADDD SHOP OPTIMIZATION COMPLETE ✦          │" -ForegroundColor Green
 Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
 Write-Host ""
+
 $items = @(
     "CPU scheduling + core parking OFF"
     "HPET disabled"
@@ -2586,11 +2216,14 @@ $items = @(
     "Pagefile fixed + Timer 1ms"
     "Stream + shader cache rebuilt"
 )
+
 foreach ($item in $items) { DONE_LINE $item; Start-Sleep -Milliseconds 35 }
+
 Write-Host ""
 $Host.UI.RawUI.ForegroundColor = "Red"
 Write-Host "  REBOOT RECOMMENDED - then drop into FiveM."
 Write-Host ""
+
 # -- Burn Single-Use Key on Cloud (ใช้งานได้แค่ครั้งเดียว) --
 if ($global:_currentUsedKey -and $global:_currentUsedKey -ne "DEV") {
     Set-CloudHWID $global:_currentUsedKey "USED_$CurrentHWID" | Out-Null
@@ -2605,6 +2238,7 @@ if ($global:_currentUsedKey -and $global:_currentUsedKey -ne "DEV") {
     }
     Save-KeyDB $db
 }
+
 # -- Reboot prompt ----------------------------------------
 $reboot = [System.Windows.Forms.MessageBox]::Show(
     "RIEWJADDD SHOP v$GHOST_VERSION Complete!`n`nReboot now for full effect?",
@@ -2614,6 +2248,7 @@ $reboot = [System.Windows.Forms.MessageBox]::Show(
 )
 Write-Host "  Log saved to: $LogPath" -ForegroundColor DarkGray
 try { Stop-Transcript | Out-Null } catch {}
+
 if ($reboot -eq [System.Windows.Forms.DialogResult]::Yes) {
     Restart-Computer -Force
 }
