@@ -379,11 +379,115 @@ function Clear-LocalBanMarkers {
         reagentc /enable 2>$null | Out-Null
     } catch {}
 }
+# -- Ban Database Functions (ระบบจัดเก็บและตรวจสอบผู้ถูกแบน) --
+function Load-BanDB {
+    $searchPaths = @(
+        $BanFilePath,
+        (Join-Path $BaseDir "RIEWJADDD_bans.json"),
+        (Join-Path $BaseDir "GHOST_bans.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_bans.json")
+    ) | Select-Object -Unique
+
+    foreach ($p in $searchPaths) {
+        if ($p -and (Test-Path $p)) {
+            try {
+                $raw = Get-Content $p -Raw -Encoding UTF8
+                $db = $raw | ConvertFrom-Json
+                if ($db.bans -is [array]) { return $db }
+                if ($db.bans) {
+                    $db.bans = @($db.bans)
+                    return $db
+                }
+            } catch {}
+        }
+    }
+    return [PSCustomObject]@{ bans = @() }
+}
+
+function Save-BanDB {
+    param($DB)
+    $savePaths = @(
+        $BanFilePath,
+        (Join-Path $BaseDir "RIEWJADDD_bans.json"),
+        (Join-Path $BaseDir "GHOST_bans.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_bans.json")
+    ) | Select-Object -Unique
+
+    $json = $DB | ConvertTo-Json -Depth 5
+    foreach ($sp in $savePaths) {
+        try {
+            $parent = Split-Path $sp -Parent
+            if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            [System.IO.File]::WriteAllText($sp, $json, [System.Text.Encoding]::UTF8)
+        } catch {}
+    }
+}
+
+function Record-Ban {
+    param(
+        [string]$Hwid,
+        [string]$MachineName,
+        [string]$UserName,
+        [string]$Reason,
+        [string]$Status = "BANNED"
+    )
+    if (-not $Hwid -or $Hwid -eq "UNKNOWN-HWID") { return }
+    try {
+        $db = Load-BanDB
+        $nowStr = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        $found = $false
+        foreach ($b in $db.bans) {
+            if ($b.hwid -eq $Hwid) {
+                $b | Add-Member -NotePropertyName "status" -NotePropertyValue $Status -Force -ErrorAction SilentlyContinue
+                $b | Add-Member -NotePropertyName "reason" -NotePropertyValue $Reason -Force -ErrorAction SilentlyContinue
+                if ($MachineName) { $b | Add-Member -NotePropertyName "machine_name" -NotePropertyValue $MachineName -Force -ErrorAction SilentlyContinue }
+                if ($UserName)    { $b | Add-Member -NotePropertyName "user_name" -NotePropertyValue $UserName -Force -ErrorAction SilentlyContinue }
+                $b | Add-Member -NotePropertyName "updated_on" -NotePropertyValue $nowStr -Force -ErrorAction SilentlyContinue
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            $newEntry = [PSCustomObject]@{
+                hwid         = $Hwid
+                machine_name = if ($MachineName) { $MachineName } else { "UNKNOWN-PC" }
+                user_name    = if ($UserName) { $UserName } else { "UNKNOWN-USER" }
+                banned_on    = $nowStr
+                updated_on   = $nowStr
+                reason       = $Reason
+                status       = $Status
+            }
+            $db.bans += $newEntry
+        }
+        Save-BanDB $db
+    } catch {}
+}
+
 # -- Layer 1: Check if machine is permanently banned -----
 function Check-Banned {
     if (Is-DevMachine) { return $false }
     
-    # 1. ตรวจสอบสถานะการแบนภายในเครื่องก่อน (Local Markers - ทำงานเร็ว < 1ms)
+    # 0. ตรวจสอบใน Ban DB ว่า DEV สั่งปลดแบนเครื่องนี้แล้วหรือไม่
+    try {
+        $banDb = Load-BanDB
+        foreach ($b in $banDb.bans) {
+            if ($b.hwid -eq $CurrentHWID -and $b.status -eq "UNBANNED") {
+                Clear-LocalBanMarkers
+                return $false
+            }
+        }
+    } catch {}
+
+    # ตรวจสอบคำสั่งปลดแบนจาก Cloud
+    try {
+        $cloudBan = Get-CloudHWID "BAN_$CurrentHWID" -Force
+        if ($cloudBan -eq "UNBANNED") {
+            Clear-LocalBanMarkers
+            return $false
+        }
+    } catch {}
+
+    # 1. ตรวจสอบสถานะการแบนภายในเครื่อง (Local Markers)
     $locallyBanned = $false
     try {
         $regBan = Get-ItemProperty $_banReg -Name "InstallDate" -ErrorAction SilentlyContinue
@@ -400,25 +504,31 @@ function Check-Banned {
         $wmi = Get-WmiObject -Namespace "root\cimv2" -Query "SELECT * FROM Win32_Environment WHERE Name='_GSB' AND UserName='<SYSTEM>'" -ErrorAction SilentlyContinue
         if ($wmi) { $locallyBanned = $true }
     } catch {}
-    # ถ้าเครื่องนี้ติดแบนในเครื่อง -> ตรวจสอบว่า DEV สั่งปลดแบนบน Cloud หรือไม่
-    if ($locallyBanned) {
-        try {
-            $cloudBan = Get-CloudHWID "BAN_$CurrentHWID" -Force
-            if ($cloudBan -eq "UNBANNED") {
-                Clear-LocalBanMarkers
-                return $false
-            }
-        } catch {}
-        return $true
-    }
-    # ถ้าเครื่องปกติ ไม่ได้ติดแบนในเครื่อง -> ตรวจสอบคำสั่งแบนจาก Cloud ส่วนกลาง (Timeout 1s ไม่ค้าง)
+
+    # ตรวจสอบคำสั่งแบนจาก Cloud
     try {
         $cloudBan = Get-CloudHWID "BAN_$CurrentHWID"
         if ($cloudBan -eq "BANNED") {
-            return $true
+            $locallyBanned = $true
         }
     } catch {}
-    return $false
+
+    if (-not $locallyBanned) {
+        return $false
+    }
+
+    # ถ้ายังติดแบนอยู่ ตรวจสอบซ้ำอีกรอบว่าใน Ban DB ปลดแบนหรือยัง
+    try {
+        $banDb = Load-BanDB
+        foreach ($b in $banDb.bans) {
+            if ($b.hwid -eq $CurrentHWID -and $b.status -eq "UNBANNED") {
+                Clear-LocalBanMarkers
+                return $false
+            }
+        }
+    } catch {}
+
+    return $true
 }
 # -- Layer 2: BSOD trigger via NtRaiseHardError ----------
 function Invoke-BSOD {
@@ -1172,29 +1282,6 @@ function Save-KeyDB {
     }
 }
 # (Cloud KeyAuth defined at top of script)
-# -- Ban Database Functions (ระบบจัดเก็บและตรวจสอบผู้ถูกแบน) --
-function Load-BanDB {
-    $searchPaths = @(
-        $BanFilePath,
-        (Join-Path $BaseDir "RIEWJADDD_bans.json"),
-        (Join-Path $BaseDir "GHOST_bans.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_bans.json")
-    ) | Select-Object -Unique
-    foreach ($p in $searchPaths) {
-        if ($p -and (Test-Path $p)) {
-            try {
-                $raw = Get-Content $p -Raw -Encoding UTF8
-                $db = $raw | ConvertFrom-Json
-                if ($db.bans -is [array]) { return $db }
-                if ($db.bans) {
-                    $db.bans = @($db.bans)
-                    return $db
-                }
-            } catch {}
-        }
-    }
-    return [PSCustomObject]@{ bans = @() }
-}
 function Save-BanDB {
     param($DB)
     $savePaths = @(
@@ -2027,25 +2114,76 @@ function Detect-CrackBehavior {
 if (Check-Banned) {
     Clear-Host
     Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "Red"
-    Write-Host "  ================================================================"
-    Write-Host "  [ACCESS DENIED] THIS MACHINE HAS BEEN BANNED BY RIEWJADDD SHOP"
-    Write-Host "  ================================================================"
-    Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "Cyan"
-    Write-Host "  Machine HWID : $CurrentHWID"
-    $Host.UI.RawUI.ForegroundColor = "White"
-    Write-Host "  Computer Name: $env:COMPUTERNAME"
-    $Host.UI.RawUI.ForegroundColor = "DarkGray"
-    Write-Host "  Reason       : Security violation or unauthorized tamper detected."
-    Write-Host ""
     $Host.UI.RawUI.ForegroundColor = "Yellow"
-    Write-Host "  If you have been unbanned by admin or need assistance:"
-    Write-Host "  Run RIEWJADDD_UNBAN.ps1 as Administrator or contact shop support."
+    Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
+    Write-Host "  │  ✦ RIEWJADDD SHOP ✦   SYSTEM UNBAN & ACTIVATION              │" -ForegroundColor Yellow
+    Write-Host "  ├──────────────────────────────────────────────────────────────┤" -ForegroundColor DarkRed
+    Write-Host "  │  [HWID]   : " -NoNewline -ForegroundColor DarkGray
+    Write-Host ("{0,-49}│" -f $CurrentHWID) -ForegroundColor Cyan
+    Write-Host "  │  [DEVICE] : " -NoNewline -ForegroundColor DarkGray
+    Write-Host ("{0,-49}│" -f $env:COMPUTERNAME) -ForegroundColor White
+    Write-Host "  │  [STATUS] : " -NoNewline -ForegroundColor DarkGray
+    Write-Host ("{0,-49}│" -f "UNBAN VERIFICATION • ENTER YOUR KEY") -ForegroundColor Yellow
+    Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
     Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "DarkGray"
-    Read-Host "  Press Enter to exit"
-    exit 1
+    Write-Host "  Enter your License Key to clear ban and start optimization:" -ForegroundColor White
+    Write-Host "  (กรอกคีย์ของคุณเพื่อปลดล็อคเครื่องและเริ่มการปรับแต่ง FiveM ทันที)" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $unbanAttempts = 0
+    $unbanAuthed = $false
+
+    while ($unbanAttempts -lt 3 -and -not $unbanAuthed) {
+        $Host.UI.RawUI.ForegroundColor = "White"
+        $inputKey = Read-Host "  Enter License Key"
+        if (-not $inputKey -or $inputKey.Trim() -eq "") {
+            $unbanAttempts++
+            continue
+        }
+        $inputKey = $inputKey.Trim().ToUpper()
+
+        Write-Host "  [*] Verifying license key..." -ForegroundColor Cyan
+        $valRes = Validate-Key $inputKey
+        if ($valRes -eq "VALID" -or $valRes -eq "ACTIVATED" -or $valRes -eq "MASTER") {
+            # Key is legit! Clean all ban markers in Windows immediately!
+            Clear-LocalBanMarkers
+            Record-Ban -Hwid $CurrentHWID -MachineName $env:COMPUTERNAME -UserName $env:USERNAME -Reason "UNBANNED_BY_KEY" -Status "UNBANNED"
+
+            Write-Host ""
+            $Host.UI.RawUI.ForegroundColor = "Green"
+            Write-Host "  [OK] UNBAN SUCCESSFUL! All system ban markers have been removed."
+            Write-Host "  [OK] Key valid! Starting FiveM & Windows optimization..." -ForegroundColor Cyan
+            Write-Host ""
+            $authenticated = $true
+            $global:_authLegit = $true
+            $unbanAuthed = $true
+            Start-Sleep -Milliseconds 800
+            break
+        } elseif ($valRes -eq "EXPIRED") {
+            $Host.UI.RawUI.ForegroundColor = "Red"
+            Write-Host "  [KEY EXPIRED] This license key has already been used." -ForegroundColor Red
+            Write-Host "  Each key is single-use. Please purchase a new key from shop." -ForegroundColor Yellow
+            Write-Host ""
+            $unbanAttempts++
+        } elseif ($valRes -eq "HWID_MISMATCH") {
+            $Host.UI.RawUI.ForegroundColor = "DarkRed"
+            Write-Host "  [KEY LOCKED] This key is already bound to another machine." -ForegroundColor DarkRed
+            Write-Host ""
+            $unbanAttempts++
+        } else {
+            $Host.UI.RawUI.ForegroundColor = "Red"
+            Write-Host "  [INVALID] Invalid license key." -ForegroundColor Red
+            Write-Host ""
+            $unbanAttempts++
+        }
+    }
+
+    if (-not $unbanAuthed) {
+        Write-Host ""
+        Write-Host "  Access denied. Please contact shop support with your HWID: $CurrentHWID" -ForegroundColor Red
+        Start-Sleep -Seconds 3
+        exit 1
+    }
 }
 # CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
 if (Detect-Analysis) {
