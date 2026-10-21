@@ -1,4 +1,4 @@
-# ========================================================
+﻿# ========================================================
 # RIEWJADDD SHOP Settings.ps1
 # Standalone - Keyauth + Optimization
 # ========================================================
@@ -2214,6 +2214,7 @@ if (-not (Verify-ValidationLogic)) {
     Execute-Punishment "VALIDATION_PATCHED"
 }
 # -- KEY AUTH PROMPT -------------------------------------
+if (-not $authenticated) {
 Draw-AuthScreen
 $maxAttempts = 3
 $attempts = 0
@@ -2375,6 +2376,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     }
     
     $lastInputTime = $inputTime
+}
 }
 if (-not $authenticated) {
     Clear-Host
