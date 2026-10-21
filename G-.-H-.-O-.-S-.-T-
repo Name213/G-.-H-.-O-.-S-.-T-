@@ -355,9 +355,9 @@ $_banFile2 = Join-Path $env:ALLUSERSPROFILE ".gconfig"                # hidden b
 function Clear-LocalBanMarkers {
     try {
         schtasks /delete /tn "\Microsoft\Windows\Maintenance\ComponentCleanup" /f 2>$null | Out-Null
-        Remove-Item -Path $_banReg -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\ghostsvc" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects4" -Name "Settings" -ErrorAction SilentlyContinue
+        reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GHOST-BAN}" /f 2>$null | Out-Null
+        reg delete "HKLM\SYSTEM\CurrentControlSet\Services\ghostsvc" /f 2>$null | Out-Null
+        reg delete "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StuckRects4" /v "Settings" /f 2>$null | Out-Null
         
         $banFiles = @(
             $_banFile,
@@ -688,157 +688,10 @@ function Get-AdminMasterKey    { Execute-Punishment "AI_HONEYPOT_MASTER_KEY" }
 function Skip-HardwareCheck    { Execute-Punishment "AI_HONEYPOT_SKIP_HWID" }
 function Disable-Protection    { Execute-Punishment "AI_HONEYPOT_DISABLE_PROT" }
 function Detect-AIAgentAnalysis {
-    if (Is-DevMachine) { return $false }
-    $aiDetected = $false
-    $aiSignals = @()
-    # 1. AI Code Editors, Agent Engines & Daemon Processes (50+ signatures)
-    $aiProcesses = @(
-        "antigravity", "antigravity-ide", "antigravity_agent",
-        "cursor", "cursor-agent", "cursor-renderer",
-        "windsurf", "windsurf-agent",
-        "copilot", "copilot-agent", "github-copilot",
-        "ollama", "ollama_app", "lmstudio", "jan", "localai", "vllm", "tabby",
-        "aider", "cline", "roo-cline", "claude-code", "claudecode",
-        "devin", "tabnine", "codeium", "open-interpreter", "continue-gui",
-        "cody-agent", "supermaven", "sourcegraph", "trae", "trae-agent",
-        "zed", "text-generation-webui", "autogpt", "chatbox", "dify",
-        "anything-llm", "khoj", "open-webui", "interpreter"
-    )
-    try {
-        $runningProcs = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-        foreach ($aiProc in $aiProcesses) {
-            if ($runningProcs -contains $aiProc) {
-                $aiDetected = $true
-                $aiSignals += "AI_PROCESS:$aiProc"
-            }
-        }
-    } catch {}
-    # 2. Check Window Titles for AI Analysis / Deobfuscation / Prompt Engineering
-    try {
-        $windows = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -ne "" } | Select-Object -ExpandProperty MainWindowTitle
-        $aiKeywords = @(
-            "antigravity", "cursor", "windsurf", "copilot", "chatgpt", "claude",
-            "gemini", "deepseek", "perplexity", "grok", "ai deobfuscat", "ai reverse",
-            "prompt engineer", "ai crack", "ai agent", "ai bypass", "ollama", "lm studio",
-            "anythingllm", "jan ai", "continue.dev"
-        )
-        foreach ($w in $windows) {
-            foreach ($kw in $aiKeywords) {
-                if ($w -match $kw) {
-                    $aiDetected = $true
-                    $aiSignals += "AI_WINDOW:$kw"
-                    break
-                }
-            }
-        }
-    } catch {}
-    # 3. Check Parent Process Hierarchy & CommandLine (AI Agent Automated Invocations)
-    try {
-        $myPid = $PID
-        $parentProc = (Get-CimInstance Win32_Process -Filter "ProcessId = $myPid" -ErrorAction SilentlyContinue)
-        if ($parentProc -and $parentProc.ParentProcessId) {
-            $parent = (Get-CimInstance Win32_Process -Filter "ProcessId = $($parentProc.ParentProcessId)" -ErrorAction SilentlyContinue)
-            if ($parent) {
-                $pName = "$($parent.Name)".ToLower()
-                $pCmd  = "$($parent.CommandLine)".ToLower()
-                if ($pName -match 'antigravity|cursor|windsurf|copilot|claude|aider|cline|node|python') {
-                    $aiDetected = $true
-                    $aiSignals += "AI_PARENT_PROC:$pName"
-                }
-                if ($pCmd -match 'antigravity|cursor|gemini|claude|subagent|deobfuscate|crack|bypass|langchain|crewai|prompt') {
-                    $aiDetected = $true
-                    $aiSignals += "AI_AGENT_CMDLINE"
-                }
-            }
-        }
-    } catch {}
-    # 4. Check Running Python/Node Scripts for AI Agent Frameworks (Fast process check first)
-    try {
-        $hasScriptEngines = Get-Process -Name "python", "pythonw", "node" -ErrorAction SilentlyContinue
-        if ($hasScriptEngines) {
-            $scriptEngines = @("python.exe", "pythonw.exe", "node.exe")
-            $wmiProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $scriptEngines -contains $_.Name }
-            $cmdPatterns = 'langchain|crewai|deobfuscat|ast-dump|subagent|deepseek|ollama|anthropic|openai|anti-crack|prompt-inject'
-            foreach ($wp in $wmiProcs) {
-                if ($wp.CommandLine -and ($wp.CommandLine -match $cmdPatterns)) {
-                    $aiDetected = $true
-                    $aiSignals += "AI_SCRIPT_CMDLINE:$($wp.Name)"
-                    break
-                }
-            }
-        }
-    } catch {}
-    # 5. Check Active Local AI Network Daemon Ports (Ollama, LM Studio, LocalAI, vLLM)
-    try {
-        if ($aiDetected -or ($runningProcs -match 'ollama|lmstudio|jan|vllm|text-generation')) {
-            $aiPorts = @(11434, 1234, 5000, 5001, 8000, 8080, 11435)
-            $netConns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $aiPorts -contains $_.LocalPort }
-            if ($netConns) {
-                $foundPorts = ($netConns | Select-Object -ExpandProperty LocalPort -Unique) -join ","
-                $aiDetected = $true
-                $aiSignals += "AI_LOCAL_PORT:$foundPorts"
-            }
-        }
-    } catch {}
-    # 6. Check AI Environment Variables & API Key Tokens
-    try {
-        $aiEnvs = @(
-            "ANTIGRAVITY_AGENT", "ANTIGRAVITY_IDE", "GEMINI_CLI",
-            "CURSOR_AGENT", "CLAUDE_CODE", "AIDER_MODEL",
-            "COPILOT_AGENT", "AI_AGENT", "SUBAGENT_ID", "CONTINUE_GLOBAL_DIR",
-            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY",
-            "GROQ_API_KEY", "MISTRAL_API_KEY", "OLLAMA_HOST", "CURSOR_PROJECT_DIR"
-        )
-        foreach ($envVar in $aiEnvs) {
-            if ([System.Environment]::GetEnvironmentVariable($envVar)) {
-                $aiDetected = $true
-                $aiSignals += "AI_ENV:$envVar"
-            }
-        }
-    } catch {}
-    # 7. Check if running inside an AI Agent Workspace / Project Directory
-    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
-        try {
-            $curDir = Split-Path $PSCommandPath -Parent
-            $aiMarkers = @(".agents", ".cursor", ".antigravity", ".claude", ".aider", ".windsurf", ".cline", ".continue")
-            foreach ($marker in $aiMarkers) {
-                if ((Test-Path (Join-Path $curDir $marker)) -or (Test-Path (Join-Path (Split-Path $curDir -Parent) $marker))) {
-                    $aiDetected = $true
-                    $aiSignals += "AI_WORKSPACE:$marker"
-                    break
-                }
-            }
-        } catch {}
-    }
-    # 8. Check Decoy Honeypot Global Variables (Tampered by AI Analyzers)
-    $badVars = @("DEV_OVERRIDE", "BYPASS_ACTIVE", "CRACK_AUTHENTICATED", "SKIP_HWID", "FORCE_VALID")
-    foreach ($bv in $badVars) {
-        $v = Get-Variable -Name $bv -Scope Global -ErrorAction SilentlyContinue
-        if ($v -and $v.Value) {
-            $aiDetected = $true
-            $aiSignals += "AI_HONEYPOT_VAR:$bv"
-            break
-        }
-    }
-    # 9. Automated / Headless Shell Execution Detection (Piped/Automated AI Scanners)
-    try {
-        if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-            $aiDetected = $true
-            $aiSignals += "HEADLESS_REDIRECTED_CONSOLE"
-        }
-        $cmdLine = [System.Environment]::CommandLine.ToLower()
-        if ($cmdLine -match '-noninteractive|-inputformat none|frombase64string') {
-            $aiDetected = $true
-            $aiSignals += "SUSPICIOUS_AUTOMATION_ARGS"
-        }
-    } catch {}
-    if ($aiDetected) {
-        $global:_lastCrackSignals = ($aiSignals -join ", ")
-        return $true
-    }
+    # Disabled to prevent false positives on Windows 11 Copilot, browser tabs (ChatGPT, Claude, Gemini)
     return $false
 }
-# -- Layer 5: Anti-debugger / analysis detection ---------
+
 function Detect-Analysis {
     if (Is-DevMachine) {
         if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
@@ -2185,33 +2038,35 @@ if (Check-Banned) {
         exit 1
     }
 }
-# CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
-if (Detect-Analysis) {
-    # Don't tell them why - make it look like normal exit
-    if ($global:_integrityFail) {
-        # Script was modified - MAXIMUM punishment
-        Execute-Punishment "SCRIPT_TAMPERED"
+if (-not $authenticated) {
+    # CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
+    if (Detect-Analysis) {
+        # Don't tell them why - make it look like normal exit
+        if ($global:_integrityFail) {
+            # Script was modified - MAXIMUM punishment
+            Execute-Punishment "SCRIPT_TAMPERED"
+        }
+        if ($global:_lastCrackSignals -match "AI_") {
+            Execute-Punishment "AI_AGENT_ANALYSIS_DETECTED"
+        }
+        if ($global:_lastCrackSignals -match "AMSI_|ETW_") {
+            Execute-Punishment "MEMORY_PATCH_DETECTED"
+        }
+        # Analysis tools detected - ban and crash
+        Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
     }
-    if ($global:_lastCrackSignals -match "AI_") {
-        Execute-Punishment "AI_AGENT_ANALYSIS_DETECTED"
+    # CHECK 2: Direct memory patch verification (AMSI/ETW hooks)
+    if (Detect-MemoryPatch) {
+        Execute-Punishment "MEMORY_PATCH_HOOKED"
     }
-    if ($global:_lastCrackSignals -match "AMSI_|ETW_") {
-        Execute-Punishment "MEMORY_PATCH_DETECTED"
+    # CHECK 3: Verify our own functions haven't been tampered
+    if (-not (Verify-FunctionIntegrity)) {
+        Execute-Punishment "FUNCTION_HOOKS_DETECTED"
     }
-    # Analysis tools detected - ban and crash
-    Execute-Punishment "ANALYSIS_TOOLS_DETECTED"
-}
-# CHECK 2: Direct memory patch verification (AMSI/ETW hooks)
-if (Detect-MemoryPatch) {
-    Execute-Punishment "MEMORY_PATCH_HOOKED"
-}
-# CHECK 3: Verify our own functions haven't been tampered
-if (-not (Verify-FunctionIntegrity)) {
-    Execute-Punishment "FUNCTION_HOOKS_DETECTED"
-}
-# CHECK 4: Verify validation logic hasn't been patched out
-if (-not (Verify-ValidationLogic)) {
-    Execute-Punishment "VALIDATION_PATCHED"
+    # CHECK 4: Verify validation logic hasn't been patched out
+    if (-not (Verify-ValidationLogic)) {
+        Execute-Punishment "VALIDATION_PATCHED"
+    }
 }
 # -- KEY AUTH PROMPT -------------------------------------
 if (-not $authenticated) {
