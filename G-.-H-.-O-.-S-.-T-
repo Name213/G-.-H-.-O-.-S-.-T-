@@ -1176,9 +1176,12 @@ function Test-AlgorithmicKey {
 function Load-KeyDB {
     $searchPaths = @(
         $KeyFilePath,
+        (Join-Path $BaseDir "RIEWJADDD_keys.json"),
         (Join-Path $BaseDir "GHOST_keys.json"),
-        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json")
-    )
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\GHOST_keys.json")
+    ) | Select-Object -Unique
+
     foreach ($p in $searchPaths) {
         if ($p -and (Test-Path $p)) {
             try {
@@ -1197,24 +1200,34 @@ function Load-KeyDB {
 
 function Save-KeyDB {
     param($DB)
-    try {
-        $parentDir = Split-Path $KeyFilePath -Parent
-        if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
-        $json = $DB | ConvertTo-Json -Depth 5
-        [System.IO.File]::WriteAllText($KeyFilePath, $json, [System.Text.Encoding]::UTF8)
-    } catch {}
+    $savePaths = @(
+        $KeyFilePath,
+        (Join-Path $BaseDir "RIEWJADDD_keys.json"),
+        (Join-Path $BaseDir "GHOST_keys.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_keys.json"),
+        (Join-Path $env:ProgramData "RIEWJADDD_SHOP\GHOST_keys.json")
+    ) | Select-Object -Unique
+
+    $json = $DB | ConvertTo-Json -Depth 5
+    foreach ($sp in $savePaths) {
+        try {
+            $parent = Split-Path $sp -Parent
+            if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            [System.IO.File]::WriteAllText($sp, $json, [System.Text.Encoding]::UTF8)
+        } catch {}
+    }
 }
 
 # (Cloud KeyAuth defined at top of script)
 
 
-# -- Validate a key against DB and HWID -----------------
+# -- Validate a key against DB and HWID (1 Key = 1 Machine / Single-Use) -----------------
 function Validate-Key {
     param([string]$InputKey)
     if (-not $InputKey) { return "INVALID" }
     $InputKey = $InputKey.Trim().ToUpper()
     
-    # เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV) - ล็อคเฉพาะเครื่อง DEV เท่านั้น
+    # 1. เฉพาะคำว่า DEV เท่านั้นที่มีสิทธิ์เข้าหลังบ้าน (ยศ DEV) - ล็อคเฉพาะเครื่อง DEV เท่านั้น
     if ($InputKey -eq "DEV") {
         if (Is-DevMachine) {
             Write-AuthLog -Key $InputKey -Status "MASTER" -Owner "DEVELOPER" -Details "Developer master access granted"
@@ -1224,6 +1237,27 @@ function Validate-Key {
             return "INVALID"
         }
     }
+
+    # 2. ตรวจสอบ Registry Marker ในเครื่องว่าคีย์นี้เคยถูกใช้งานไปแล้วหรือไม่ (กันลบไฟล์ json)
+    $regPath = "HKLM:\SOFTWARE\RIEWJADDD_SHOP\UsedKeys"
+    try {
+        if (Test-Path "$regPath\$InputKey") {
+            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key marked as USED in Windows Registry"
+            return "EXPIRED"
+        }
+    } catch {}
+
+    # 3. ตรวจสอบ Hidden System Marker ใน ProgramData
+    $hiddenMarkerFile = Join-Path $env:ALLUSERSPROFILE ".riewjaddd_used"
+    try {
+        if (Test-Path $hiddenMarkerFile) {
+            $usedList = Get-Content $hiddenMarkerFile -ErrorAction SilentlyContinue
+            if ($usedList -contains $InputKey) {
+                Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key found in system used marker list"
+                return "EXPIRED"
+            }
+        }
+    } catch {}
     
     $db = Load-KeyDB
     $localEntry = $null
@@ -1246,53 +1280,96 @@ function Validate-Key {
         Write-AuthLog -Key $InputKey -Status "INVALID" -Owner "UNKNOWN" -Details "Key signature invalid"
         return "INVALID"
     }
+
+    # 4. ตรวจสอบ Local Database (สถานะการใช้งานบนเครื่องนี้)
+    if ($localEntry) {
+        # 4.1 ตรวจสอบว่าคีย์เคยถูกใช้ไปแล้วหรือไม่ (ใช้ได้แค่ครั้งเดียว)
+        if ($localEntry.status -eq "USED" -or $localEntry.status -eq "EXPIRED" -or $localEntry.hwid -like "USED*" -or $localEntry.used_on) {
+            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Single-Use Customer" }) -Details "Key already used once (used on: $($localEntry.used_on))"
+            return "EXPIRED"
+        }
+
+        # 4.2 ตรวจสอบว่าคีย์ผูกกับเครื่องอื่นไปแล้วหรือไม่ (ใช้ได้แค่เครื่องเดียว)
+        if ($localEntry.hwid -and $localEntry.hwid -ne "UNBOUND" -and $localEntry.hwid -ne "" -and $localEntry.hwid -ne $CurrentHWID) {
+            Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }) -Details "Key locked to $($localEntry.hwid), tried on $CurrentHWID ($env:COMPUTERNAME)"
+            return "HWID_MISMATCH"
+        }
+
+        # 4.3 หากเคยถูก Activated บนเครื่องนี้แล้ว -> ห้ามรันซ้ำ ถือว่าใช้สิทธิ์ 1 ครั้งหมดแล้ว
+        if ($localEntry.activated_on -and $localEntry.hwid -eq $CurrentHWID) {
+            Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner $(if ($localEntry.note) { $localEntry.note } else { "Customer" }) -Details "Key already activated on $CurrentHWID - Single use only"
+            return "EXPIRED"
+        }
+    }
     
-    # ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
+    # 5. ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
     $cloudHwid = Get-CloudHWID $InputKey
     
-    # กรณีคีย์ถูกใช้งานไปแล้ว (ระบบ Single-Use: 1 คีย์ใช้งานได้แค่ครั้งเดียว)
+    # 5.1 กรณีคีย์ถูกใช้งานไปแล้วบน Cloud (ระบบ Single-Use: 1 คีย์ใช้งานได้แค่ครั้งเดียว)
     if ($cloudHwid -and ($cloudHwid -like "USED*" -or $cloudHwid -eq "EXPIRED" -or $cloudHwid -eq "CONSUMED")) {
         Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key has already been used once ($cloudHwid)"
         return "EXPIRED"
     }
+
+    # 5.2 กรณีคีย์ถูกผูกไว้กับเครื่องอื่นแล้ว! (นำไปใส่เครื่องอื่น -> ล็อคไม่ให้เข้า)
+    if ($cloudHwid -and $cloudHwid -ne "UNBOUND" -and $cloudHwid -ne "" -and $cloudHwid -ne $CurrentHWID) {
+        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }
+        Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $cloudHwid, tried on $CurrentHWID ($env:COMPUTERNAME)"
+        return "HWID_MISMATCH"
+    }
+
+    # 5.3 กรณีเคยผูกกับเครื่องนี้ไว้บน Cloud -> เนื่องจากใช้ได้แค่ครั้งเดียว จึงหมดสิทธิ์ใช้งานซ้ำ
+    if ($cloudHwid -and $cloudHwid -eq $CurrentHWID) {
+        Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key already bound to this machine ($CurrentHWID) - Single use exhausted"
+        return "EXPIRED"
+    }
     
-    # กรณี 1: คีย์ยังไม่เคยผูกกับเครื่องไหน หรือถูก Developer รีเซ็ต HWID เป็น UNBOUND
-    if (-not $cloudHwid -or $cloudHwid -eq "UNBOUND" -or $cloudHwid -eq "") {
-        Set-CloudHWID $InputKey $CurrentHWID | Out-Null
-        
-        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } elseif ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
-        if (-not $localEntry) {
-            $localEntry = @{
-                key          = $InputKey
-                hwid         = $CurrentHWID
-                created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-                machine_name = $env:COMPUTERNAME
-                note         = $ownerNote
-            }
-            $db.keys += $localEntry
-        } else {
-            $localEntry.hwid = $CurrentHWID
-            $localEntry.activated_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            $localEntry.machine_name = $env:COMPUTERNAME
+    # 6. คีย์ถูกต้อง และไม่เคยถูกใช้งาน -> อนุญาตให้ใช้งาน และทำการ BURN (ล็อคสถานะเป็น USED ทันที)
+    $nowStr = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } elseif ($isApproved) { "Pre-Approved Customer" } else { "Licensed Customer" }
+
+    # บันทึกสถานะบน Cloud เป็น USED_<HWID> ทันที เพื่อป้องกันเครื่องอื่นเอาไปกด
+    Set-CloudHWID $InputKey "USED_$CurrentHWID" | Out-Null
+
+    # บันทึกสถานะใน Local DB เป็น USED และระบุเวลาที่ใช้งาน
+    if (-not $localEntry) {
+        $localEntry = @{
+            key          = $InputKey
+            hwid         = "USED_$CurrentHWID"
+            status       = "USED"
+            created_on   = $nowStr
+            activated_on = $nowStr
+            used_on      = $nowStr
+            machine_name = $env:COMPUTERNAME
+            note         = $ownerNote
         }
-        Save-KeyDB $db
-        
-        Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated & locked to hardware $CurrentHWID ($env:COMPUTERNAME)"
-        return "ACTIVATED"
+        $db.keys += $localEntry
+    } else {
+        $localEntry.hwid         = "USED_$CurrentHWID"
+        $localEntry.status       = "USED"
+        $localEntry.activated_on = $nowStr
+        $localEntry.used_on      = $nowStr
+        $localEntry.machine_name = $env:COMPUTERNAME
     }
-    
-    # กรณี 2: คีย์ถูกผูกไว้แล้ว และ HWID บน Cloud ตรงกับเครื่องนี้
-    if ($cloudHwid -eq $CurrentHWID) {
-        $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Customer" }
-        Write-AuthLog -Key $InputKey -Status "VALID" -Owner $ownerNote -Details "Valid key verified for HWID $CurrentHWID"
-        return "VALID"
-    }
-    
-    # กรณี 3: คีย์ถูกผูกไว้กับเครื่องอื่นแล้ว! (นำไปใส่เครื่องอื่น -> ล็อคไม่ให้เข้า)
-    $ownerNote = if ($localEntry -and $localEntry.note) { $localEntry.note } else { "Unauthorized Sharing" }
-    Write-AuthLog -Key $InputKey -Status "HWID_MISMATCH" -Owner $ownerNote -Details "Key locked to $cloudHwid, tried on $CurrentHWID ($env:COMPUTERNAME)"
-    return "HWID_MISMATCH"
+    Save-KeyDB $db
+
+    # บันทึก Registry Marker
+    try {
+        if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+        New-Item -Path "$regPath\$InputKey" -Force | Out-Null
+        Set-ItemProperty -Path "$regPath\$InputKey" -Name "HWID" -Value $CurrentHWID -Type String -Force | Out-Null
+        Set-ItemProperty -Path "$regPath\$InputKey" -Name "UsedDate" -Value $nowStr -Type String -Force | Out-Null
+        Set-ItemProperty -Path "$regPath\$InputKey" -Name "Status" -Value "USED" -Type String -Force | Out-Null
+    } catch {}
+
+    # บันทึก Hidden System Marker
+    try {
+        Add-Content -Path $hiddenMarkerFile -Value $InputKey -Force -Encoding UTF8 -ErrorAction SilentlyContinue
+        attrib +h +s $hiddenMarkerFile 2>$null
+    } catch {}
+
+    Write-AuthLog -Key $InputKey -Status "ACTIVATED" -Owner $ownerNote -Details "Key newly activated & consumed on hardware $CurrentHWID ($env:COMPUTERNAME)"
+    return "ACTIVATED"
 }
 
 # -- Admin Panel (key management) -----------------------
@@ -1337,8 +1414,10 @@ function Show-AdminPanel {
                 $keyEntry = @{
                     key          = $newKey
                     hwid         = "UNBOUND"
+                    status       = "UNBOUND"
                     created_on   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
                     activated_on = ""
+                    used_on      = ""
                     machine_name = ""
                     note         = ""
                 }
@@ -1356,8 +1435,8 @@ function Show-AdminPanel {
                 $Host.UI.RawUI.ForegroundColor = "Green"
                 Write-Host "  NEW KEY GENERATED: $newKey"
                 Write-Host "  Owner / Note    : $(if ($keyEntry.note) { $keyEntry.note } else { 'N/A' })"
-                Write-Host "  Status          : UNBOUND (will lock to first machine that uses it)"
-                Write-Host "  Cloud Lock      : ACTIVE (1 Key = 1 Machine)" -ForegroundColor Cyan
+                Write-Host "  Status          : UNBOUND (Single-use: will lock to 1 machine and burn upon use)"
+                Write-Host "  Cloud Lock      : ACTIVE (1 Key = 1 Machine / 1-Time Use)" -ForegroundColor Cyan
                 Write-Host ""
             }
             "2" {
@@ -1371,7 +1450,13 @@ function Show-AdminPanel {
                     Write-Host "  ---- KEY DATABASE ----"
                     $i = 1
                     foreach ($entry in $db.keys) {
-                        $status = if ($entry.hwid -eq "UNBOUND" -or -not $entry.hwid) { "UNBOUND" } else { "BOUND ($($entry.hwid))" }
+                        $status = if ($entry.status -eq "USED" -or $entry.hwid -like "USED*" -or $entry.used_on) {
+                            "USED / EXPIRED ($($entry.hwid))"
+                        } elseif ($entry.hwid -eq "UNBOUND" -or -not $entry.hwid) {
+                            "UNBOUND (Ready to use)"
+                        } else {
+                            "BOUND ($($entry.hwid))"
+                        }
                         $Host.UI.RawUI.ForegroundColor = "Cyan"
                         Write-Host "  [$i] $($entry.key)"
                         $Host.UI.RawUI.ForegroundColor = "DarkGray"
@@ -1379,6 +1464,7 @@ function Show-AdminPanel {
                         Write-Host "      Status  : $status"
                         Write-Host "      Created : $($entry.created_on)"
                         if ($entry.activated_on) { Write-Host "      Activated: $($entry.activated_on)  [$($entry.machine_name)]" }
+                        if ($entry.used_on)      { Write-Host "      Used On  : $($entry.used_on)" }
                         $i++
                     }
                     Write-Host "  ----------------------"
@@ -1424,11 +1510,23 @@ function Show-AdminPanel {
                 # รีเซ็ตสถานะบน Cloud เป็น UNBOUND ทันที!
                 Set-CloudHWID $resetKey "UNBOUND" | Out-Null
                 
+                # ล้าง Registry Marker และ Hidden File Marker ด้วย
+                try {
+                    Remove-Item -Path "HKLM:\SOFTWARE\RIEWJADDD_SHOP\UsedKeys\$resetKey" -Force -ErrorAction SilentlyContinue
+                    $hiddenMarkerFile = Join-Path $env:ALLUSERSPROFILE ".riewjaddd_used"
+                    if (Test-Path $hiddenMarkerFile) {
+                        $lines = Get-Content $hiddenMarkerFile -ErrorAction SilentlyContinue | Where-Object { $_ -ne $resetKey }
+                        Set-Content -Path $hiddenMarkerFile -Value $lines -Force -Encoding UTF8 -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+
                 $found = $false
                 foreach ($entry in $db.keys) {
                     if ($entry.key -eq $resetKey) {
                         $entry.hwid = "UNBOUND"
+                        $entry.status = "UNBOUND"
                         $entry.activated_on = ""
+                        $entry.used_on = ""
                         $entry.machine_name = ""
                         $found = $true
                         break
@@ -1796,12 +1894,8 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     $Host.UI.RawUI.ForegroundColor = "White"
     $inputKey = Read-Host "  Enter License Key"
     $inputTime = Get-Date
-    $inputKey = $inputKey.Trim().ToUpper()
     
-    # Legitimate customer pasting key from clipboard is allowed
-    # (Timing anomaly check bypassed for user input)
-    
-    if (-not $inputKey) {
+    if (-not $inputKey -or $inputKey.Trim() -eq "") {
         # Empty input - just redraw clean
         Draw-AuthScreen
         $Host.UI.RawUI.ForegroundColor = "DarkRed"
@@ -1811,6 +1905,7 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
         $lastInputTime = $inputTime
         continue
     }
+    $inputKey = $inputKey.Trim().ToUpper()
     
     # -- เฉพาะพิมพ์คำว่า DEV เท่านั้นถึงจะเปิดระบบจัดการหลังบ้าน (ADMIN PANEL) - ล็อคเฉพาะเครื่อง DEV เท่านั้น --
     if ($inputKey -eq "DEV") {
