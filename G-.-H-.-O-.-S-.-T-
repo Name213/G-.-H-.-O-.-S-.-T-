@@ -223,6 +223,7 @@ function Write-AuthLog {
     $badge = switch ($Status) {
         "ACTIVATED"     { "[ACTIVATED - FIRST BIND]" }
         "VALID"         { "[VALID - ACCESS GRANTED]" }
+        "EXPIRED"       { "[EXPIRED - ALREADY USED]" }
         "MASTER"        { "[MASTER / DEVELOPER]" }
         "HWID_MISMATCH" { "[HWID MISMATCH - REJECTED]" }
         "INVALID"       { "[INVALID KEY - REJECTED]" }
@@ -259,6 +260,7 @@ function Write-AuthLog {
     $thaiStatus = switch ($Status) {
         "ACTIVATED"     { "✅ ลงทะเบียนใหม่ (ผูกกับเครื่องนี้)" }
         "VALID"         { "🟢 คีย์ถูกต้อง (เข้าใช้งานสำเร็จ)" }
+        "EXPIRED"       { "⌛ คีย์หมดอายุ (ถูกใช้งานไปแล้ว)" }
         "MASTER"        { "👑 ผู้พัฒนา (ยศ DEV เข้าหลังบ้าน)" }
         "HWID_MISMATCH" { "⚠️ HWID ไม่ตรง (ถูกปฏิเสธ)" }
         "INVALID"       { "❌ คีย์ไม่ถูกต้อง (ถูกปฏิเสธ)" }
@@ -1111,6 +1113,12 @@ function Validate-Key {
     # ตรวจสอบ Cloud HWID Lock (ระบบล็อค 1 คีย์ 1 เครื่องส่วนกลาง)
     $cloudHwid = Get-CloudHWID $InputKey
     
+    # กรณีคีย์ถูกใช้งานไปแล้ว (ระบบ Single-Use: 1 คีย์ใช้งานได้แค่ครั้งเดียว)
+    if ($cloudHwid -and ($cloudHwid -like "USED*" -or $cloudHwid -eq "EXPIRED" -or $cloudHwid -eq "CONSUMED")) {
+        Write-AuthLog -Key $InputKey -Status "EXPIRED" -Owner "Single-Use Customer" -Details "Key has already been used once ($cloudHwid)"
+        return "EXPIRED"
+    }
+    
     # กรณี 1: คีย์ยังไม่เคยผูกกับเครื่องไหน หรือถูก Developer รีเซ็ต HWID เป็น UNBOUND
     if (-not $cloudHwid -or $cloudHwid -eq "UNBOUND" -or $cloudHwid -eq "") {
         Set-CloudHWID $InputKey $CurrentHWID | Out-Null
@@ -1711,10 +1719,20 @@ while ($attempts -lt $maxAttempts -and -not $authenticated) {
     }
     
     $previousKeys += $inputKey
+    $global:_currentUsedKey = $inputKey
     
     $result = Validate-Key $inputKey
     
     switch ($result) {
+        "EXPIRED" {
+            Draw-AuthScreen
+            $Host.UI.RawUI.ForegroundColor = "Red"
+            Write-Host "  [KEY EXPIRED] This license key has already been used."
+            Write-Host "  Each key is single-use and can only be executed once." -ForegroundColor Yellow
+            Write-Host "  Please contact shop to purchase a new key." -ForegroundColor DarkGray
+            Write-Host ""
+            $attempts++
+        }
         "MASTER" {
             if (Is-DevMachine) {
                 $Host.UI.RawUI.ForegroundColor = "Green"
@@ -2205,6 +2223,21 @@ Write-Host ""
 $Host.UI.RawUI.ForegroundColor = "Red"
 Write-Host "  REBOOT RECOMMENDED - then drop into FiveM."
 Write-Host ""
+
+# -- Burn Single-Use Key on Cloud (ใช้งานได้แค่ครั้งเดียว) --
+if ($global:_currentUsedKey -and $global:_currentUsedKey -ne "DEV") {
+    Set-CloudHWID $global:_currentUsedKey "USED_$CurrentHWID" | Out-Null
+    $db = Load-KeyDB
+    foreach ($entry in $db.keys) {
+        if ($entry.key -eq $global:_currentUsedKey) {
+            $entry.hwid = "USED_$CurrentHWID"
+            $entry.status = "USED"
+            $entry.used_on = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            break
+        }
+    }
+    Save-KeyDB $db
+}
 
 # -- Reboot prompt ----------------------------------------
 $reboot = [System.Windows.Forms.MessageBox]::Show(
